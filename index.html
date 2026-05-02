@@ -1,0 +1,1078 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MedVis Studio — DICOM Viewer</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/dicom-parser@1.8.21/dist/dicomParser.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<style>
+:root{
+  --bg0:#060a0e;--bg1:#0d1117;--bg2:#111827;--bg3:#1a2332;--bgh:#1e2d3d;
+  --b0:#1a2535;--b1:#243447;--cyan:#00d4ff;--mag:#ff0077;--grn:#00ff88;--amb:#ffaa00;
+  --t0:#f0f4f8;--t1:#a8bbd0;--t2:#7a90a8;
+  --mono:'IBM Plex Mono',monospace;--sans:'IBM Plex Sans',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg0);color:var(--t0);font-family:var(--sans);height:100vh;overflow:hidden;display:flex;flex-direction:column}
+
+/* HEADER */
+.hdr{height:46px;background:var(--bg1);border-bottom:1px solid var(--b0);display:flex;align-items:center;padding:0 14px;gap:12px;flex-shrink:0;z-index:50}
+.logo{font-family:var(--mono);font-size:12px;font-weight:600;color:var(--cyan);letter-spacing:.18em;display:flex;align-items:center;gap:7px}
+.logo::before{content:'';width:7px;height:7px;background:var(--cyan);border-radius:50%;box-shadow:0 0 8px var(--cyan);animation:pulse 2s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1;box-shadow:0 0 8px var(--cyan)}50%{opacity:.4;box-shadow:0 0 2px var(--cyan)}}
+.hdiv{width:1px;height:18px;background:var(--b1)}
+.hinfo{font-family:var(--mono);font-size:10px;color:var(--t1);letter-spacing:.05em}
+.hinfo span{color:var(--t0)}
+.hbtns{margin-left:auto;display:flex;gap:6px}
+.hbtn{background:transparent;border:1px solid var(--b1);color:var(--t0);font-family:var(--mono);font-size:10px;padding:4px 11px;border-radius:3px;cursor:pointer;transition:all .15s;letter-spacing:.05em;text-transform:uppercase}
+.hbtn:hover{border-color:var(--cyan);color:var(--cyan);background:rgba(0,212,255,.05)}
+
+/* LAYOUT */
+.layout{display:grid;grid-template-columns:230px 1fr 270px;flex:1;overflow:hidden}
+
+/* LEFT PANEL */
+.lpanel{background:var(--bg2);border-right:1px solid var(--b0);display:flex;flex-direction:column;overflow:hidden}
+.psec{border-bottom:1px solid var(--b0);padding:11px}
+.ptitle{font-family:var(--mono);font-size:10px;font-weight:600;color:var(--t1);letter-spacing:.15em;text-transform:uppercase;margin-bottom:9px;display:flex;align-items:center;gap:5px}
+.ptitle::before{content:'';width:2px;height:9px;background:var(--cyan);border-radius:1px}
+.dropzone{border:1px dashed var(--b1);border-radius:4px;padding:18px 10px;text-align:center;cursor:pointer;transition:all .2s;background:var(--bg3);position:relative}
+.dropzone:hover,.dropzone.over{border-color:var(--cyan);background:rgba(0,212,255,.04)}
+.dropzone input{position:absolute;inset:0;opacity:0;cursor:pointer}
+.dropzone .dico{font-size:22px;display:block;margin-bottom:6px}
+.dropzone p{font-family:var(--mono);font-size:11px;color:var(--t1);line-height:1.7}
+.dropzone p span{color:var(--cyan);display:block}
+.slist{flex:1;overflow-y:auto;padding:7px}
+.slist::-webkit-scrollbar{width:3px}
+.slist::-webkit-scrollbar-thumb{background:var(--b1);border-radius:2px}
+.sitem{border:1px solid var(--b0);border-radius:3px;padding:9px;margin-bottom:5px;cursor:pointer;transition:all .15s;background:var(--bg3)}
+.sitem:hover{border-color:var(--b1);background:var(--bgh)}
+.sitem.active{border-color:var(--cyan);background:rgba(0,212,255,.05)}
+.badge{font-family:var(--mono);font-size:9px;font-weight:600;padding:2px 5px;border-radius:2px;background:rgba(0,212,255,.18);color:var(--cyan);letter-spacing:.1em;display:inline-block;margin-bottom:5px}
+.sdesc{font-size:12px;color:var(--t0);margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.smeta{font-family:var(--mono);font-size:10px;color:var(--t1)}
+
+/* VIEWPORT */
+.vport{background:var(--bg0);display:flex;flex-direction:column;overflow:hidden;position:relative}
+.vtabs{display:flex;background:var(--bg1);border-bottom:1px solid var(--b0);height:34px;padding:0 8px;gap:2px;align-items:flex-end;flex-shrink:0}
+.vtab{font-family:var(--mono);font-size:10px;letter-spacing:.07em;text-transform:uppercase;padding:7px 14px;cursor:pointer;color:var(--t1);border:none;border-bottom:2px solid transparent;background:transparent;transition:all .15s;white-space:nowrap}
+.vtab:hover{color:var(--t0)}
+.vtab.active{color:var(--cyan);border-bottom-color:var(--cyan)}
+.vcontent{flex:1;position:relative;overflow:hidden}
+#v2d{position:absolute;inset:0;display:flex;flex-direction:column}
+.canvaswrap{flex:1;position:relative;overflow:hidden;background:#000}
+#dicomCanvas{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;cursor:crosshair;image-rendering:pixelated;background:#000}
+#measureSVG{position:absolute;inset:0;z-index:11;pointer-events:none;width:100%;height:100%}
+.overlay{position:absolute;inset:0;pointer-events:none;z-index:12}
+.otl,.otr,.obl,.obr{position:absolute;font-family:var(--mono);font-size:10px;line-height:1.75;padding:7px;color:rgba(0,255,200,.85);text-shadow:0 1px 3px rgba(0,0,0,.95)}
+.otl{top:0;left:0}.otr{top:0;right:0;text-align:right}.obl{bottom:0;left:0}.obr{bottom:0;right:0;text-align:right}
+.thumbbar{height:60px;background:var(--bg1);border-top:1px solid var(--b0);display:flex;align-items:center;padding:0 8px;overflow-x:auto;gap:4px;flex-shrink:0}
+.thumbbar::-webkit-scrollbar{height:3px}
+.thumbbar::-webkit-scrollbar-thumb{background:var(--b1);border-radius:2px}
+.thumb{width:46px;height:46px;border:1px solid var(--b0);border-radius:2px;cursor:pointer;flex-shrink:0;background:#000;position:relative;transition:border-color .15s}
+.thumb:hover{border-color:var(--b1)}
+.thumb.active{border-color:var(--cyan);box-shadow:0 0 5px rgba(0,212,255,.4)}
+.thumb canvas{width:46px;height:46px;display:block}
+.thumb .tidx{position:absolute;bottom:1px;right:2px;font-family:var(--mono);font-size:8px;color:rgba(255,255,255,.75)}
+.slicebar{height:36px;background:var(--bg2);border-top:1px solid var(--b0);display:flex;align-items:center;padding:0 10px;gap:10px;flex-shrink:0}
+.slicebar label{font-family:var(--mono);font-size:10px;color:var(--t1);white-space:nowrap;letter-spacing:.05em}
+input[type=range].rng{-webkit-appearance:none;height:3px;background:var(--b1);border-radius:2px;outline:none;cursor:pointer;flex:1}
+input[type=range].rng::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:13px;background:var(--cyan);border-radius:50%;box-shadow:0 0 5px var(--cyan);cursor:pointer}
+input[type=range].rng.mag::-webkit-slider-thumb{background:var(--mag);box-shadow:0 0 5px var(--mag)}
+input[type=range].rng.amb::-webkit-slider-thumb{background:var(--amb);box-shadow:0 0 5px var(--amb)}
+.scnt{font-family:var(--mono);font-size:11px;color:var(--cyan);min-width:55px;text-align:right}
+#v3d,#vmpr{position:absolute;inset:0;display:none}
+#threeCanvas{display:block}
+.v3dctrl{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);display:flex;gap:5px;z-index:20;background:rgba(13,17,23,.85);padding:5px 9px;border-radius:4px;border:1px solid var(--b0);backdrop-filter:blur(4px)}
+.v3dbtn{font-family:var(--mono);font-size:10px;padding:3px 9px;border:1px solid var(--b1);background:transparent;color:var(--t0);border-radius:2px;cursor:pointer;transition:all .15s}
+.v3dbtn:hover,.v3dbtn.active{border-color:var(--cyan);color:var(--cyan);background:rgba(0,212,255,.08)}
+.mpr-grid{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:2px;background:var(--b0);position:absolute;inset:0}
+.mpane{background:#000;position:relative;overflow:hidden}
+.mplabel{position:absolute;top:5px;left:7px;font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;z-index:5;pointer-events:none}
+.mpane canvas{width:100%;height:100%;display:block;image-rendering:pixelated}
+#welcome{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;z-index:50;background:var(--bg0)}
+.wico{width:60px;height:60px;border:1px solid var(--b1);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:26px;background:var(--bg3);animation:float 3s ease-in-out infinite}
+@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-7px)}}
+.wtitle{font-family:var(--mono);font-size:13px;color:var(--t1);letter-spacing:.2em;text-transform:uppercase}
+.wsub{font-size:12px;color:var(--t1);text-align:center;max-width:300px;line-height:1.75;font-family:var(--mono)}
+.wchips{display:flex;gap:5px;flex-wrap:wrap;justify-content:center;max-width:320px}
+.wchip{font-family:var(--mono);font-size:10px;padding:3px 9px;border:1px solid var(--b1);border-radius:10px;color:var(--t1)}
+.ldover{position:absolute;inset:0;background:rgba(6,10,14,.85);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;z-index:100;backdrop-filter:blur(2px)}
+.ldring{width:36px;height:36px;border:2px solid var(--b1);border-top-color:var(--cyan);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.ldtxt{font-family:var(--mono);font-size:11px;color:var(--t2);letter-spacing:.1em}
+.pgbar{position:fixed;top:46px;left:0;right:0;height:2px;z-index:200;display:none}
+.pgfill{height:100%;background:linear-gradient(90deg,var(--cyan),var(--mag));transition:width .25s ease;box-shadow:0 0 5px var(--cyan)}
+
+/* RIGHT PANEL */
+.rpanel{background:var(--bg2);border-left:1px solid var(--b0);display:flex;flex-direction:column;overflow:hidden}
+.rscroll{flex:1;overflow-y:auto}
+.rscroll::-webkit-scrollbar{width:3px}
+.rscroll::-webkit-scrollbar-thumb{background:var(--b1);border-radius:2px}
+.cgrp{padding:11px;border-bottom:1px solid var(--b0)}
+.clabel{font-family:var(--mono);font-size:10px;color:var(--t1);letter-spacing:.1em;text-transform:uppercase;display:flex;justify-content:space-between;align-items:center;margin-bottom:7px}
+.cval{color:var(--cyan);font-size:11px}
+.tgrid{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:2px}
+.tbtn{background:var(--bg3);border:1px solid var(--b0);color:var(--t0);font-family:var(--mono);font-size:10px;padding:7px 5px;border-radius:3px;cursor:pointer;transition:all .15s;text-align:center;display:flex;flex-direction:column;align-items:center;gap:3px;letter-spacing:.04em}
+.tbtn:hover{border-color:var(--b1);color:var(--t0);background:var(--bgh)}
+.tbtn.active{border-color:var(--cyan);color:var(--cyan);background:rgba(0,212,255,.08)}
+.tbtn .ti{font-size:13px}
+.pgrid{display:grid;grid-template-columns:1fr 1fr;gap:4px}
+.pbtn{background:var(--bg3);border:1px solid var(--b0);color:var(--t0);font-family:var(--mono);font-size:9.5px;padding:6px 4px;border-radius:3px;cursor:pointer;transition:all .15s;text-align:center}
+.pbtn:hover{border-color:var(--cyan);color:var(--cyan);background:rgba(0,212,255,.06)}
+.mgrid{display:grid;gap:3px}
+.mrow{display:grid;grid-template-columns:95px 1fr;gap:3px;font-family:var(--mono);font-size:9.5px;padding:3px 0;border-bottom:1px solid rgba(26,37,53,.6)}
+.mkey{color:var(--t1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mval{color:var(--t0);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mval.hi{color:var(--cyan)}
+.measrow{display:flex;align-items:center;gap:5px;padding:3px 0;border-bottom:1px solid rgba(26,37,53,.4);font-family:var(--mono);font-size:10px;color:var(--t0)}
+.measval{margin-left:auto;color:var(--cyan)}
+#histCanvas{width:100%;height:56px;border-radius:3px;background:var(--bg3);display:block}
+.cmgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;margin-bottom:16px}
+.cmbtn{height:18px;border-radius:2px;cursor:pointer;border:2px solid transparent;transition:all .15s;position:relative}
+.cmbtn:hover{transform:scaleY(1.15)}
+.cmbtn.active{border-color:#fff}
+.cmbtn .cmlbl{position:absolute;bottom:-13px;left:50%;transform:translateX(-50%);font-family:var(--mono);font-size:8px;color:var(--t1);white-space:nowrap}
+.sbar{height:21px;background:var(--bg1);border-top:1px solid var(--b0);display:flex;align-items:center;padding:0 11px;gap:14px;font-family:var(--mono);font-size:10px;color:var(--t1);flex-shrink:0;z-index:50}
+.sdot{width:5px;height:5px;border-radius:50%;background:var(--t2)}
+.sdot.ok{background:var(--grn);box-shadow:0 0 4px var(--grn)}
+.sdot.warn{background:var(--amb);box-shadow:0 0 4px var(--amb)}
+.sdot.err{background:var(--mag);box-shadow:0 0 4px var(--mag)}
+.toast{position:fixed;bottom:28px;left:50%;transform:translateX(-50%) translateY(18px);background:var(--bg3);border:1px solid var(--b1);color:var(--t0);font-family:var(--mono);font-size:11px;padding:7px 15px;border-radius:4px;opacity:0;transition:all .25s;z-index:1000;pointer-events:none;box-shadow:0 4px 18px rgba(0,0,0,.55)}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.toast.cyan{border-color:var(--cyan);color:var(--cyan)}
+.toast.err{border-color:var(--mag);color:var(--mag)}
+kbd{font-family:var(--mono);font-size:9px;background:var(--bg3);border:1px solid var(--b1);border-radius:2px;padding:1px 4px}
+</style>
+</head>
+<body>
+
+<div class="pgbar" id="pgbar"><div class="pgfill" id="pgfill" style="width:0%"></div></div>
+
+<header class="hdr">
+  <div class="logo">MedVis Studio</div>
+  <div class="hdiv"></div>
+  <div class="hinfo">DICOM VIEWER <span>v2.0</span></div>
+  <div class="hdiv"></div>
+  <div class="hinfo" id="patBadge">no study loaded</div>
+  <div class="hbtns">
+    <button class="hbtn" onclick="exportPNG()">&#8595; PNG</button>
+    <button class="hbtn" onclick="resetView()">&#8635; Reset</button>
+    <button class="hbtn" onclick="showKeys()">Keys</button>
+    <button class="hbtn" onclick="showAbout()">Acerca de&hellip;</button>
+  </div>
+</header>
+
+<div class="layout">
+  <!-- LEFT PANEL -->
+  <aside class="lpanel">
+    <div class="psec">
+      <div class="ptitle">Load DICOM</div>
+      <div class="dropzone" id="dz" ondrop="onDrop(event)" ondragover="onDragOver(event)" ondragleave="onDragLeave(event)">
+        <input type="file" id="fInput" webkitdirectory directory multiple onchange="onFileInput(event)">
+        <span class="dico">&#128194;</span>
+        <p><span>Click o arrastrar carpeta</span>Archivos DICOM / DICOMDIR</p>
+      </div>
+    </div>
+    <div class="psec" id="studyPanel" style="display:none">
+      <div class="ptitle">Study</div>
+      <div class="mgrid" id="studyMeta"></div>
+    </div>
+    <div class="psec" style="padding-bottom:5px;flex-shrink:0">
+      <div class="ptitle">Series <span id="seriesCount" style="color:var(--cyan);font-size:9px"></span></div>
+    </div>
+    <div class="slist" id="seriesList">
+      <div style="font-family:var(--mono);font-size:11px;color:var(--t1);padding:16px;text-align:center;line-height:1.8">
+        Carga una carpeta DICOM<br>para ver las series disponibles
+      </div>
+    </div>
+  </aside>
+
+  <!-- VIEWPORT -->
+  <main class="vport">
+    <div id="welcome">
+      <div class="wico">&#129467;</div>
+      <div class="wtitle">MedVis Studio</div>
+      <div class="wsub">Carga una carpeta DICOM desde el panel izquierdo para comenzar</div>
+      <div class="wchips">
+        <span class="wchip">CT &middot; MRI &middot; CR &middot; DX &middot; US</span>
+        <span class="wchip">2D &middot; MPR &middot; 3D</span>
+        <span class="wchip">W/L &middot; Zoom &middot; Medidas</span>
+      </div>
+    </div>
+    <div class="vtabs" id="vtabs" style="display:none">
+      <button class="vtab active" onclick="switchView('2d')" id="t2d">2D AXIAL</button>
+      <button class="vtab" onclick="switchView('mpr')" id="tmpr">MPR</button>
+      <button class="vtab" onclick="switchView('3d')" id="t3d">3D VOLUME</button>
+    </div>
+    <div class="vcontent" id="vcontent" style="display:none">
+      <!-- 2D -->
+      <div id="v2d">
+        <div class="canvaswrap" id="canvaswrap">
+          <canvas id="dicomCanvas"></canvas>
+          <svg id="measureSVG" xmlns="http://www.w3.org/2000/svg"></svg>
+          <div class="overlay">
+            <div class="otl" id="oTL"></div>
+            <div class="otr" id="oTR"></div>
+            <div class="obl" id="oBL"></div>
+            <div class="obr" id="oBR"></div>
+          </div>
+        </div>
+        <div class="thumbbar" id="thumbbar"></div>
+        <div class="slicebar">
+          <label>SLICE</label>
+          <input type="range" class="rng" id="sliceR" min="0" value="0" oninput="goSlice(+this.value)">
+          <span class="scnt" id="sliceCnt">0 / 0</span>
+          <label style="margin-left:8px">W</label>
+          <input type="range" class="rng" id="wwR" min="1" max="4000" value="400" style="width:70px" oninput="onWWchange(+this.value)">
+          <label>L</label>
+          <input type="range" class="rng mag" id="wcR" min="-1000" max="3000" value="40" style="width:70px" oninput="onWCchange(+this.value)">
+        </div>
+      </div>
+      <!-- 3D -->
+      <div id="v3d">
+        <canvas id="threeCanvas"></canvas>
+        <div class="v3dctrl">
+          <button class="v3dbtn active" onclick="set3DMode('vol')" id="b3vol">VOLUME</button>
+          <button class="v3dbtn" onclick="set3DMode('mip')" id="b3mip">MIP</button>
+          <button class="v3dbtn" onclick="set3DMode('iso')" id="b3iso">ISO</button>
+          <span style="width:1px;background:var(--b1);margin:0 3px;display:inline-block"></span>
+          <button class="v3dbtn" onclick="reset3DCam()">RESET</button>
+        </div>
+      </div>
+      <!-- MPR -->
+      <div id="vmpr">
+        <div class="mpr-grid">
+          <div class="mpane"><div class="mplabel" style="color:var(--cyan)">AXIAL</div><canvas id="mAxial"></canvas></div>
+          <div class="mpane"><div class="mplabel" style="color:var(--mag)">CORONAL</div><canvas id="mCoronal"></canvas></div>
+          <div class="mpane"><div class="mplabel" style="color:var(--amb)">SAGITTAL</div><canvas id="mSagittal"></canvas></div>
+          <div class="mpane" style="background:var(--bg0);display:flex;align-items:center;justify-content:center;flex-direction:column;gap:10px">
+            <div style="font-family:var(--mono);font-size:10px;color:var(--t1)">3D REFERENCE</div>
+            <button class="hbtn" onclick="switchView('3d')">&#8594; 3D Viewer</button>
+          </div>
+        </div>
+      </div>
+      <!-- loading -->
+      <div class="ldover" id="ldover" style="display:none">
+        <div class="ldring"></div>
+        <div class="ldtxt" id="ldtxt">Loading...</div>
+      </div>
+    </div>
+  </main>
+
+  <!-- RIGHT PANEL -->
+  <aside class="rpanel">
+    <div class="rscroll">
+      <div class="cgrp">
+        <div class="ptitle">Window / Level</div>
+        <div class="clabel">Width <span class="cval" id="wwVal">400</span></div>
+        <input type="range" class="rng" id="wwS" min="1" max="4000" value="400" oninput="onWWchange(+this.value)" style="width:100%;margin-bottom:8px">
+        <div class="clabel">Center <span class="cval" id="wcVal">40</span></div>
+        <input type="range" class="rng mag" id="wcS" min="-1000" max="3000" value="40" oninput="onWCchange(+this.value)" style="width:100%;margin-bottom:8px">
+        <div class="pgrid">
+          <button class="pbtn" onclick="preset('brain')">Brain</button>
+          <button class="pbtn" onclick="preset('lung')">Lung</button>
+          <button class="pbtn" onclick="preset('bone')">Bone</button>
+          <button class="pbtn" onclick="preset('abdomen')">Abdomen</button>
+          <button class="pbtn" onclick="preset('mediastinum')">Mediastinum</button>
+          <button class="pbtn" onclick="preset('liver')">Liver</button>
+        </div>
+      </div>
+      <div class="cgrp">
+        <div class="ptitle">Tools</div>
+        <div class="tgrid">
+          <button class="tbtn active" onclick="setTool('wl')"  id="tlwl"><span class="ti">&#9728;</span>W/L</button>
+          <button class="tbtn" onclick="setTool('zoom')" id="tlzoom"><span class="ti">&#128269;</span>Zoom</button>
+          <button class="tbtn" onclick="setTool('pan')"  id="tlpan"><span class="ti">&#10010;</span>Pan</button>
+          <button class="tbtn" onclick="setTool('len')"  id="tllen"><span class="ti">&#128207;</span>Length</button>
+          <button class="tbtn" onclick="setTool('angle')" id="tlangle"><span class="ti">&#8736;</span>Angle</button>
+          <button class="tbtn" onclick="setTool('roi')"  id="tlroi"><span class="ti">&#11835;</span>ROI</button>
+          <button class="tbtn" onclick="clearAnnotations()"><span class="ti">&#10005;</span>Clear</button>
+          <button class="tbtn" onclick="toggleInvert()" id="tlinv"><span class="ti">&#9681;</span>Invert</button>
+        </div>
+      </div>
+      <div class="cgrp" id="ctrl3d" style="display:none">
+        <div class="ptitle">3D Rendering</div>
+        <div class="clabel">Opacity <span class="cval" id="opVal">0.80</span></div>
+        <input type="range" class="rng amb" id="opS" min="0" max="100" value="80" oninput="update3DOpacity(this.value)" style="width:100%;margin-bottom:8px">
+        <div class="clabel">Threshold HU <span class="cval" id="thVal">-300</span></div>
+        <input type="range" class="rng" id="thS" min="-1000" max="3000" value="-300" oninput="update3DThreshold(this.value)" style="width:100%;margin-bottom:12px">
+        <div class="clabel" style="margin-bottom:12px">Colormap</div>
+        <div class="cmgrid">
+          <div class="cmbtn active" data-cm="gray" style="background:linear-gradient(90deg,#000,#fff)" onclick="setColormap('gray')"><span class="cmlbl">Gray</span></div>
+          <div class="cmbtn" data-cm="hot" style="background:linear-gradient(90deg,#000,#f00,#ff0,#fff)" onclick="setColormap('hot')"><span class="cmlbl">Hot</span></div>
+          <div class="cmbtn" data-cm="viridis" style="background:linear-gradient(90deg,#440154,#31688e,#35b779,#fde725)" onclick="setColormap('viridis')"><span class="cmlbl">Viridis</span></div>
+          <div class="cmbtn" data-cm="cool" style="background:linear-gradient(90deg,#0ff,#f0f)" onclick="setColormap('cool')"><span class="cmlbl">Cool</span></div>
+        </div>
+      </div>
+      <div class="cgrp">
+        <div class="ptitle">Histogram</div>
+        <canvas id="histCanvas"></canvas>
+      </div>
+      <div class="cgrp">
+        <div class="ptitle">Measurements</div>
+        <div id="measPanel"><div style="font-family:var(--mono);font-size:11px;color:var(--t1)">No measurements</div></div>
+      </div>
+      <div class="cgrp">
+        <div class="ptitle">DICOM Metadata</div>
+        <div class="mgrid" id="metaGrid"><div style="font-family:var(--mono);font-size:11px;color:var(--t1)">No image loaded</div></div>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<div class="sbar">
+  <div style="display:flex;align-items:center;gap:5px"><div class="sdot ok" id="sdot"></div><span id="stxt">Ready</span></div>
+  <span id="sfiles">0 files</span>
+  <span id="scoords" style="display:none"></span>
+  <div style="margin-left:auto;opacity:.55;display:flex;gap:8px">
+    <span><kbd>W</kbd> W/L</span>
+    <span><kbd>Z</kbd> Zoom</span>
+    <span><kbd>P</kbd> Pan</span>
+    <span><kbd>L</kbd> Length</span>
+    <span><kbd>&#8592;&#8594;</kbd> Slice</span>
+    <span><kbd>1-5</kbd> Presets</span>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+
+// ─── STATE ────────────────────────────────────────────────────────────────────
+const S = {
+  series:{}, activeUID:null, slice:0,
+  ww:400, wc:40, tool:'wl', inverted:false,
+  zoom:1, panX:0, panY:0,
+  dragging:false, dragBtn:0, dragSX:0, dragSY:0,
+  dragWW:400, dragWC:40, dragPX:0, dragPY:0,
+  annotations:[], drawing:null,
+  renderer3:null, scene3:null, cam3:null,
+  rot3X:0, rot3Y:0, zoom3:1, d3:false, d3sx:0, d3sy:0,
+  mode3:'vol', colormap:'gray',
+  volSlices:null,
+};
+
+// ─── UTILS ────────────────────────────────────────────────────────────────────
+const $  = id => document.getElementById(id);
+const tg = (ds,t) => { try{ return ds.string(t); } catch{ return null; } };
+const fmtDate = d => (!d||d.length<8)?d||'—':`${d.slice(6,8)}/${d.slice(4,6)}/${d.slice(0,4)}`;
+function setStatus(txt,type='ok'){ $('stxt').textContent=txt; $('sdot').className='sdot '+type; }
+function setPG(p){ $('pgfill').style.width=p+'%'; }
+function showPG(v){ $('pgbar').style.display=v?'block':'none'; if(!v) setPG(0); }
+function showLD(v,txt=''){ $('ldover').style.display=v?'flex':'none'; if(txt) $('ldtxt').textContent=txt; }
+let _tt=null;
+function toast(msg,type=''){
+  const el=$('toast'); el.textContent=msg; el.className='toast show '+type;
+  clearTimeout(_tt); _tt=setTimeout(()=>el.className='toast',2800);
+}
+function yield_(){ return new Promise(r=>setTimeout(r,0)); }
+function readBuf(f){ return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=e=>res(e.target.result); r.onerror=rej; r.readAsArrayBuffer(f); }); }
+function mrow(k,v,hi=false){ return `<div class="mrow"><span class="mkey">${k}</span><span class="mval${hi?' hi':''}">${v}</span></div>`; }
+
+// ─── FILE LOADING ──────────────────────────────────────────────────────────────
+function onFileInput(e){ processFiles(Array.from(e.target.files)); }
+function onDragOver(e){ e.preventDefault(); $('dz').classList.add('over'); }
+function onDragLeave(){ $('dz').classList.remove('over'); }
+function onDrop(e){
+  e.preventDefault(); $('dz').classList.remove('over');
+  const files=[];
+  async function walk(entry){
+    if(entry.isFile) return new Promise(res=>entry.file(f=>{files.push(f);res();}));
+    const r=entry.createReader();
+    return new Promise(res=>r.readEntries(async es=>{ for(const e2 of es) await walk(e2); res(); }));
+  }
+  const proms=[];
+  for(const item of e.dataTransfer.items){ const en=item.webkitGetAsEntry?.(); if(en) proms.push(walk(en)); }
+  Promise.all(proms).then(()=>{ if(files.length) processFiles(files); });
+}
+
+async function processFiles(rawFiles){
+  let files=rawFiles.filter(f=>{
+    const n=f.name.toLowerCase();
+    return n.endsWith('.dcm')||n.endsWith('.ima')||n.endsWith('.dicom')||!n.includes('.');
+  });
+  if(!files.length) files=rawFiles;
+
+  showLD(true,'Analizando archivos...'); showPG(true);
+  S.series={}; S.activeUID=null;
+  $('sfiles').textContent=`${files.length} files`;
+  let parsed=0, errors=0;
+
+  for(let i=0;i<files.length;i++){
+    try{
+      const buf=await readBuf(files[i]);
+      const bytes=new Uint8Array(buf);
+      if(bytes.length<132){ errors++; continue; }
+      // DICOM magic check
+      if(!(bytes[128]===0x44&&bytes[129]===0x49&&bytes[130]===0x43&&bytes[131]===0x4D)){
+        // might still be valid DICOM without preamble — try parse
+        if(files[i].name.toLowerCase().endsWith('.dcm')||!files[i].name.includes('.')){
+          // allow
+        } else { errors++; continue; }
+      }
+      let ds;
+      try{ ds=dicomParser.parseDicom(bytes,{untilTag:'7FE00010'}); }
+      catch{ try{ ds=dicomParser.parseDicom(bytes); }catch{ errors++;continue; } }
+
+      const uid = tg(ds,'x0020000e') || ('SER_'+i);
+      const n   = parseInt(tg(ds,'x00200013')||'0')||i;
+
+      if(!S.series[uid]) S.series[uid]={ instances:[], metadata:extractMeta(ds) };
+      S.series[uid].instances.push({ n, file:files[i], ds, buf });
+      parsed++;
+    } catch{ errors++; }
+
+    if(i%20===0){
+      setPG(Math.round((i+1)/files.length*100));
+      $('ldtxt').textContent=`Parseando ${i+1}/${files.length}...`;
+      await yield_();
+    }
+  }
+
+  for(const uid in S.series)
+    S.series[uid].instances.sort((a,b)=>a.n-b.n);
+
+  showLD(false); showPG(false);
+  const ns=Object.keys(S.series).length;
+  if(!ns){ toast('No se encontraron archivos DICOM válidos','err'); setStatus('No DICOM','err'); return; }
+  setStatus(`${parsed} imgs · ${errors} err · ${ns} series`,'ok');
+  toast(`${parsed} imágenes · ${ns} series`,'cyan');
+  renderSeriesList();
+  showViewport();
+  loadSeries(Object.keys(S.series)[0]);
+}
+
+// ─── META ──────────────────────────────────────────────────────────────────────
+function extractMeta(ds){
+  return {
+    patientName: tg(ds,'x00100010')||'Anonymous',
+    patientID:   tg(ds,'x00100020')||'—',
+    studyDate:   tg(ds,'x00080020')||'—',
+    studyDesc:   tg(ds,'x00081030')||'—',
+    modality:    tg(ds,'x00080060')||'?',
+    seriesDesc:  tg(ds,'x0008103e')||'Unnamed',
+    rows:        tg(ds,'x00280010')||'?',
+    cols:        tg(ds,'x00280011')||'?',
+    pixSpc:      tg(ds,'x00280030')||'—',
+    sliceThk:    tg(ds,'x00180050')||tg(ds,'x00500010')||'—',
+    kvp:         tg(ds,'x00180060')||'—',
+    institution: tg(ds,'x00080080')||'—',
+    manufacturer:tg(ds,'x00080070')||'—',
+    bodyPart:    tg(ds,'x00180015')||'—',
+  };
+}
+
+// ─── SERIES LIST ───────────────────────────────────────────────────────────────
+function renderSeriesList(){
+  const uids=Object.keys(S.series);
+  $('seriesCount').textContent=`(${uids.length})`;
+  const con=$('seriesList'); con.innerHTML='';
+  uids.forEach(uid=>{
+    const sr=S.series[uid], m=sr.metadata;
+    const div=document.createElement('div');
+    div.className='sitem'; div.dataset.uid=uid;
+    div.innerHTML=`<div class="badge">${m.modality}</div><div class="sdesc">${m.seriesDesc}</div><div class="smeta">${sr.instances.length} img · ${m.rows}x${m.cols}</div>`;
+    div.onclick=()=>loadSeries(uid);
+    con.appendChild(div);
+  });
+  const m=S.series[uids[0]]?.metadata;
+  if(m){
+    const pn=(m.patientName||'').replace(/\^/g,' ');
+    $('patBadge').innerHTML=`<span style="color:var(--cyan)">${pn}</span> &nbsp;|&nbsp; ${fmtDate(m.studyDate)}`;
+    $('studyPanel').style.display='block';
+    $('studyMeta').innerHTML=mrow('Patient',pn,true)+mrow('ID',m.patientID)+mrow('Study',m.studyDesc)+mrow('Date',fmtDate(m.studyDate))+mrow('Institution',m.institution);
+  }
+}
+
+// ─── LOAD SERIES ───────────────────────────────────────────────────────────────
+async function loadSeries(uid){
+  document.querySelectorAll('.sitem').forEach(el=>el.classList.toggle('active',el.dataset.uid===uid));
+  S.activeUID=uid; S.slice=0; S.annotations=[]; clearSVG();
+  const sr=S.series[uid], m=sr.metadata, total=sr.instances.length;
+  $('sliceR').max=Math.max(0,total-1); $('sliceR').value=0;
+  $('sliceCnt').textContent=`1 / ${total}`;
+  $('metaGrid').innerHTML=
+    mrow('Modality',m.modality,true)+mrow('Series',m.seriesDesc)+mrow('Body',m.bodyPart)+
+    mrow('Images',total,true)+mrow('Dim',`${m.rows}x${m.cols}`)+mrow('Px Spc',m.pixSpc)+
+    mrow('Thk',m.sliceThk)+mrow('KVP',m.kvp)+mrow('Manuf.',m.manufacturer)+mrow('Inst.',m.institution);
+  await renderSlice(0);
+  buildThumbs();
+}
+
+// ─── PIXEL DECODE ──────────────────────────────────────────────────────────────
+async function decode(inst){
+  if(inst.hu) return inst;
+  const ds=inst.ds, buf=inst.buf;
+  const rows  = parseInt(tg(ds,'x00280010')||'512');
+  const cols  = parseInt(tg(ds,'x00280011')||'512');
+  const bitsA = parseInt(tg(ds,'x00280100')||'16');
+  const pixRp = parseInt(tg(ds,'x00280103')||'0');
+  const slope = parseFloat(tg(ds,'x00281053')||'1');
+  const inter = parseFloat(tg(ds,'x00281052')||'0');
+  const el2=ds.elements['x7fe00010'];
+  if(!el2) throw new Error('No pixel data in: '+inst.file.name);
+  const raw=new Uint8Array(buf,el2.dataOffset,el2.length);
+  let px;
+  if(bitsA<=8)        px=new Uint8Array(raw.buffer,raw.byteOffset,raw.byteLength);
+  else if(pixRp===1)  px=new Int16Array(raw.buffer,raw.byteOffset,raw.byteLength/2);
+  else                px=new Uint16Array(raw.buffer,raw.byteOffset,raw.byteLength/2);
+  const hu=new Float32Array(px.length);
+  let minHU=Infinity, maxHU=-Infinity;
+  for(let i=0;i<px.length;i++){
+    const v=px[i]*slope+inter; hu[i]=v;
+    if(v<minHU) minHU=v; if(v>maxHU) maxHU=v;
+  }
+  inst.hu=hu; inst.minHU=minHU; inst.maxHU=maxHU; inst.rows=rows; inst.cols=cols;
+  return inst;
+}
+
+// ─── RENDER 2D ─────────────────────────────────────────────────────────────────
+async function renderSlice(idx, silent=false){
+  const sr=S.series[S.activeUID]; if(!sr) return;
+  idx=Math.max(0,Math.min(sr.instances.length-1,idx));
+  S.slice=idx;
+  $('sliceR').value=idx;
+  $('sliceCnt').textContent=`${idx+1} / ${sr.instances.length}`;
+  if(!silent) showLD(true,'Decodificando...');
+  try{
+    const inst=await decode(sr.instances[idx]);
+    paintCanvas(inst);
+    updateOverlays(inst,idx);
+    drawHistogram(inst.hu,inst.minHU,inst.maxHU);
+    highlightThumb(idx);
+    updateMeasPanel();
+  } catch(e){
+    toast('Error: '+e.message,'err');
+  }
+  if(!silent) showLD(false);
+}
+
+function paintCanvas(inst){
+  const wrap=$('canvaswrap');
+  const cw=wrap.clientWidth||512, ch=wrap.clientHeight||512;
+  const canvas=$('dicomCanvas');
+  canvas.width=inst.cols; canvas.height=inst.rows;
+  canvas.style.width=cw+'px'; canvas.style.height=ch+'px';
+  const svg=$('measureSVG');
+  svg.setAttribute('viewBox',`0 0 ${cw} ${ch}`);
+  const ctx=canvas.getContext('2d');
+  const imgD=ctx.createImageData(inst.cols,inst.rows);
+  const wwMin=S.wc-S.ww/2, wwR=S.ww||1;
+  for(let i=0;i<inst.hu.length;i++){
+    let v=Math.round(((inst.hu[i]-wwMin)/wwR)*255);
+    v=Math.max(0,Math.min(255,v));
+    if(S.inverted) v=255-v;
+    imgD.data[i*4]=v; imgD.data[i*4+1]=v; imgD.data[i*4+2]=v; imgD.data[i*4+3]=255;
+  }
+  ctx.putImageData(imgD,0,0);
+}
+
+function updateOverlays(inst,idx){
+  const sr=S.series[S.activeUID]; if(!sr) return;
+  const m=sr.metadata, total=sr.instances.length;
+  const pn=(m.patientName||'').replace(/\^/g,' ');
+  $('oTL').innerHTML=`${pn}<br>${m.patientID}<br>${fmtDate(m.studyDate)}`;
+  $('oTR').innerHTML=`${m.institution}<br>${m.manufacturer}<br>${m.modality}`;
+  $('oBL').innerHTML=`${inst.cols}x${inst.rows}<br>Px:${m.pixSpc}<br>Thk:${m.sliceThk}`;
+  $('oBR').innerHTML=`${idx+1}/${total}<br>${m.seriesDesc}<br>W:${S.ww} L:${S.wc}`;
+}
+
+// ─── W/L ───────────────────────────────────────────────────────────────────────
+function onWWchange(v){ S.ww=Math.max(1,v); syncWL(); repaint(); }
+function onWCchange(v){ S.wc=v; syncWL(); repaint(); }
+function syncWL(){
+  for(const id of ['wwR','wwS']){ const el=$(id); if(el) el.value=S.ww; }
+  for(const id of ['wcR','wcS']){ const el=$(id); if(el) el.value=S.wc; }
+  $('wwVal').textContent=Math.round(S.ww); $('wcVal').textContent=Math.round(S.wc);
+}
+function repaint(){
+  const sr=S.series[S.activeUID]; if(!sr) return;
+  const inst=sr.instances[S.slice]; if(!inst?.hu) return;
+  paintCanvas(inst); updateOverlays(inst,S.slice);
+}
+const PRESETS={brain:{ww:80,wc:40},lung:{ww:1500,wc:-600},bone:{ww:1500,wc:400},abdomen:{ww:350,wc:40},mediastinum:{ww:350,wc:50},liver:{ww:150,wc:60}};
+function preset(name){ const p=PRESETS[name]; if(!p) return; S.ww=p.ww; S.wc=p.wc; syncWL(); repaint(); toast('Preset: '+name,'cyan'); }
+
+// ─── TOOLS ─────────────────────────────────────────────────────────────────────
+const TOOLS=['wl','zoom','pan','len','angle','roi','inv'];
+function setTool(t){
+  S.tool=t;
+  TOOLS.forEach(id=>{ const el=$('tl'+id); if(el) el.classList.toggle('active',id===t); });
+}
+function toggleInvert(){ S.inverted=!S.inverted; $('tlinv').classList.toggle('active',S.inverted); repaint(); }
+
+// ─── MOUSE ─────────────────────────────────────────────────────────────────────
+const cvs=$('dicomCanvas');
+cvs.addEventListener('mousedown',e=>{ e.preventDefault(); startDrag(e.clientX,e.clientY,e.button); });
+window.addEventListener('mouseup',()=>endDrag());
+window.addEventListener('mousemove',e=>onMove(e.clientX,e.clientY));
+cvs.addEventListener('wheel',e=>{ e.preventDefault(); onWheel(e); },{passive:false});
+cvs.addEventListener('mouseleave',()=>$('scoords').style.display='none');
+
+function startDrag(x,y,btn){
+  S.dragging=true; S.dragBtn=btn;
+  S.dragSX=x; S.dragSY=y;
+  S.dragWW=S.ww; S.dragWC=S.wc;
+  S.dragPX=S.panX; S.dragPY=S.panY;
+  if(btn===0&&(S.tool==='len'||S.tool==='angle'||S.tool==='roi')) startAnnot(x,y);
+}
+function endDrag(){
+  if(S.drawing&&S.dragging) finishAnnot();
+  S.dragging=false; S.drawing=null;
+}
+function onMove(x,y){
+  showCoords(x,y);
+  if(!S.dragging) return;
+  const dx=x-S.dragSX, dy=y-S.dragSY;
+  if(S.drawing){ updateAnnot(x,y); return; }
+  if(S.tool==='wl'||S.dragBtn===0&&S.tool==='wl'){
+    S.ww=Math.max(1,S.dragWW+dx*3); S.wc=S.dragWC+dy*2;
+    syncWL(); repaint();
+  } else if(S.tool==='pan'||S.dragBtn===2){
+    S.panX=S.dragPX+dx; S.panY=S.dragPY+dy; applyTransform();
+  } else if(S.tool==='zoom'){
+    S.zoom=Math.max(.1,Math.min(15,S.zoom*(1-dy*.005))); applyTransform();
+  }
+}
+function onWheel(e){
+  if(e.ctrlKey||S.tool==='zoom'){
+    S.zoom=Math.max(.1,Math.min(15,S.zoom*(e.deltaY>0?.9:1.1))); applyTransform();
+  } else {
+    goSlice(S.slice+(e.deltaY>0?1:-1));
+  }
+}
+function applyTransform(){
+  const c=$('dicomCanvas'), s=$('measureSVG');
+  const t=`scale(${S.zoom}) translate(${S.panX/S.zoom}px,${S.panY/S.zoom}px)`;
+  c.style.transform=t; s.style.transform=t;
+}
+function showCoords(mx,my){
+  const sr=S.series[S.activeUID]; if(!sr) return;
+  const inst=sr.instances[S.slice]; if(!inst?.hu) return;
+  const rect=cvs.getBoundingClientRect();
+  const sx=inst.cols/rect.width, sy=inst.rows/rect.height;
+  const px=Math.floor((mx-rect.left)*sx), py=Math.floor((my-rect.top)*sy);
+  if(px>=0&&px<inst.cols&&py>=0&&py<inst.rows){
+    const hu=Math.round(inst.hu[py*inst.cols+px]);
+    $('scoords').textContent=`X:${px} Y:${py}  HU:${hu}`;
+    $('scoords').style.display='inline';
+  }
+}
+
+// ─── ANNOTATIONS ────────────────────────────────────────────────────────────────
+function svgPt(mx,my){ const r=cvs.getBoundingClientRect(); return {x:mx-r.left, y:my-r.top}; }
+function imgPt(mx,my){
+  const sr=S.series[S.activeUID]; if(!sr) return {x:0,y:0};
+  const inst=sr.instances[S.slice]; if(!inst) return {x:0,y:0};
+  const r=cvs.getBoundingClientRect();
+  return {x:(mx-r.left)*(inst.cols/r.width), y:(my-r.top)*(inst.rows/r.height)};
+}
+
+function startAnnot(mx,my){
+  S.drawing={ type:S.tool, pts:[svgPt(mx,my)], ipts:[imgPt(mx,my)] };
+}
+function updateAnnot(mx,my){
+  const a=S.drawing; if(!a) return;
+  const sp=svgPt(mx,my), ip=imgPt(mx,my);
+  if(a.pts.length===1){ a.pts.push(sp); a.ipts.push(ip); }
+  else { a.pts[1]=sp; a.ipts[1]=ip; }
+  renderAnnotations();
+}
+function finishAnnot(){
+  const a=S.drawing; if(!a||a.pts.length<2) return;
+  const sr=S.series[S.activeUID], m=sr?.metadata;
+  let result='';
+  const pxSpc=parseFloat((m?.pixSpc||'1').split('\\')[0])||1;
+  if(a.type==='len'){
+    const dx=a.ipts[1].x-a.ipts[0].x, dy=a.ipts[1].y-a.ipts[0].y;
+    result=(Math.sqrt(dx*dx+dy*dy)*pxSpc).toFixed(2)+' mm';
+  } else if(a.type==='angle'){
+    const dx=a.ipts[1].x-a.ipts[0].x, dy=a.ipts[1].y-a.ipts[0].y;
+    result=Math.abs(Math.atan2(dy,dx)*180/Math.PI).toFixed(1)+'°';
+  } else if(a.type==='roi'){
+    const inst=sr?.instances[S.slice];
+    const cx=(a.ipts[0].x+a.ipts[1].x)/2, cy=(a.ipts[0].y+a.ipts[1].y)/2;
+    const rx=Math.abs(a.ipts[1].x-a.ipts[0].x)/2, ry=Math.abs(a.ipts[1].y-a.ipts[0].y)/2;
+    if(inst?.hu&&rx>0&&ry>0){
+      let sum=0,sum2=0,n=0;
+      for(let r=Math.floor(cy-ry);r<=Math.ceil(cy+ry);r++){
+        for(let c=Math.floor(cx-rx);c<=Math.ceil(cx+rx);c++){
+          if(r<0||r>=inst.rows||c<0||c>=inst.cols) continue;
+          if(((c-cx)/rx)**2+((r-cy)/ry)**2<=1){ const v=inst.hu[r*inst.cols+c]; sum+=v; sum2+=v*v; n++; }
+        }
+      }
+      if(n>0){
+        const mean=(sum/n).toFixed(1), sd=Math.sqrt(Math.max(0,sum2/n-(sum/n)**2)).toFixed(1);
+        const area=(Math.PI*rx*ry*pxSpc*pxSpc).toFixed(1);
+        result=`${mean} HU  SD:${sd}  ${area} mm²`;
+      }
+    }
+  }
+  S.annotations.push({ type:a.type, pts:a.pts, ipts:a.ipts, result });
+  renderAnnotations(); updateMeasPanel();
+}
+function clearAnnotations(){ S.annotations=[]; clearSVG(); updateMeasPanel(); }
+function clearSVG(){ const s=$('measureSVG'); while(s.firstChild) s.removeChild(s.firstChild); }
+
+function renderAnnotations(){
+  clearSVG();
+  const svg=$('measureSVG');
+  const ns='http://www.w3.org/2000/svg';
+  const all=[...S.annotations];
+  if(S.drawing?.pts?.length>=2) all.push(S.drawing);
+  all.forEach((a,ai)=>{
+    if(!a.pts||a.pts.length<2) return;
+    const p0=a.pts[0], p1=a.pts[1];
+    if(a.type==='len'){
+      const line=document.createElementNS(ns,'line');
+      line.setAttribute('x1',p0.x); line.setAttribute('y1',p0.y);
+      line.setAttribute('x2',p1.x); line.setAttribute('y2',p1.y);
+      line.setAttribute('stroke','#00d4ff'); line.setAttribute('stroke-width','1.5'); line.setAttribute('stroke-dasharray','none');
+      svg.appendChild(line);
+      for(const p of [p0,p1]){ const c=document.createElementNS(ns,'circle'); c.setAttribute('cx',p.x); c.setAttribute('cy',p.y); c.setAttribute('r','4'); c.setAttribute('fill','#00d4ff'); svg.appendChild(c); }
+      if(a.result){ const t=document.createElementNS(ns,'text'); t.setAttribute('x',(p0.x+p1.x)/2+6); t.setAttribute('y',(p0.y+p1.y)/2-6); t.setAttribute('fill','rgba(0,255,200,.9)'); t.setAttribute('font-family','IBM Plex Mono,monospace'); t.setAttribute('font-size','11'); t.textContent=a.result; svg.appendChild(t); }
+    } else if(a.type==='roi'){
+      const cx=(p0.x+p1.x)/2, cy=(p0.y+p1.y)/2, rx=Math.abs(p1.x-p0.x)/2, ry=Math.abs(p1.y-p0.y)/2;
+      const el=document.createElementNS(ns,'ellipse');
+      el.setAttribute('cx',cx); el.setAttribute('cy',cy); el.setAttribute('rx',rx); el.setAttribute('ry',ry);
+      el.setAttribute('stroke','#ffaa00'); el.setAttribute('stroke-width','1.5'); el.setAttribute('fill','rgba(255,170,0,.07)');
+      svg.appendChild(el);
+      if(a.result){ const t=document.createElementNS(ns,'text'); t.setAttribute('x',cx+rx+4); t.setAttribute('y',cy); t.setAttribute('fill','rgba(255,170,0,.9)'); t.setAttribute('font-family','IBM Plex Mono,monospace'); t.setAttribute('font-size','10'); t.textContent=a.result; svg.appendChild(t); }
+    } else if(a.type==='angle'){
+      const line=document.createElementNS(ns,'line');
+      line.setAttribute('x1',p0.x); line.setAttribute('y1',p0.y);
+      line.setAttribute('x2',p1.x); line.setAttribute('y2',p1.y);
+      line.setAttribute('stroke','#ff0077'); line.setAttribute('stroke-width','1.5');
+      svg.appendChild(line);
+      if(a.result){ const t=document.createElementNS(ns,'text'); t.setAttribute('x',p1.x+6); t.setAttribute('y',p1.y); t.setAttribute('fill','rgba(255,0,119,.9)'); t.setAttribute('font-family','IBM Plex Mono,monospace'); t.setAttribute('font-size','11'); t.textContent=a.result; svg.appendChild(t); }
+    }
+  });
+}
+function updateMeasPanel(){
+  const p=$('measPanel');
+  if(!S.annotations.length){ p.innerHTML='<div style="font-family:var(--mono);font-size:11px;color:var(--t1)">No measurements</div>'; return; }
+  p.innerHTML=S.annotations.map((a,i)=>`<div class="measrow"><span>${a.type==='len'?'&#128207;':a.type==='roi'?'&#11835;':'&#8736;'}</span><span>${a.type} ${i+1}</span><span class="measval">${a.result||'—'}</span></div>`).join('');
+}
+
+// ─── NAVIGATION ─────────────────────────────────────────────────────────────────
+function goSlice(idx){
+  const sr=S.series[S.activeUID]; if(!sr) return;
+  idx=Math.max(0,Math.min(sr.instances.length-1,idx));
+  if(idx===S.slice) return;
+  renderSlice(idx,true);
+}
+
+// ─── HISTOGRAM ──────────────────────────────────────────────────────────────────
+function drawHistogram(hu,minHU,maxHU){
+  const c=$('histCanvas'); c.width=c.offsetWidth||240; c.height=56;
+  const ctx=c.getContext('2d'); ctx.clearRect(0,0,c.width,c.height);
+  const bins=128, hist=new Array(bins).fill(0), rng=maxHU-minHU||1;
+  for(let i=0;i<hu.length;i++){ const b=Math.floor((hu[i]-minHU)/rng*(bins-1)); if(b>=0&&b<bins) hist[b]++; }
+  const maxH=Math.max(...hist)||1, w=c.width/bins;
+  const g=ctx.createLinearGradient(0,0,c.width,0);
+  g.addColorStop(0,'#001a33'); g.addColorStop(.5,'#005577'); g.addColorStop(1,'#00d4ff');
+  ctx.fillStyle=g;
+  for(let i=0;i<bins;i++){ const h=(hist[i]/maxH)*c.height; ctx.fillRect(i*w,c.height-h,w-.5,h); }
+}
+
+// ─── THUMBNAILS ─────────────────────────────────────────────────────────────────
+function buildThumbs(){
+  const sr=S.series[S.activeUID]; if(!sr) return;
+  const bar=$('thumbbar'); bar.innerHTML='';
+  const total=sr.instances.length;
+  const step=Math.max(1,Math.floor(total/Math.min(16,total)));
+  for(let i=0;i<total;i+=step){
+    const wrap=document.createElement('div'); wrap.className='thumb'; wrap.dataset.idx=i;
+    const c=document.createElement('canvas'); c.width=46; c.height=46;
+    const span=document.createElement('span'); span.className='tidx'; span.textContent=i+1;
+    wrap.appendChild(c); wrap.appendChild(span); wrap.onclick=()=>goSlice(i);
+    bar.appendChild(wrap);
+    (async(idx)=>{
+      try{
+        const inst=await decode(sr.instances[idx]);
+        const ctx=c.getContext('2d'), imgD=ctx.createImageData(46,46);
+        const sx=inst.cols/46, sy=inst.rows/46, wwMin=S.wc-S.ww/2, wwR=S.ww||1;
+        for(let y=0;y<46;y++) for(let x=0;x<46;x++){
+          let v=Math.round(((inst.hu[Math.floor(y*sy)*inst.cols+Math.floor(x*sx)]-wwMin)/wwR)*255);
+          v=Math.max(0,Math.min(255,v));
+          const i4=(y*46+x)*4; imgD.data[i4]=v; imgD.data[i4+1]=v; imgD.data[i4+2]=v; imgD.data[i4+3]=255;
+        }
+        ctx.putImageData(imgD,0,0);
+      } catch{}
+    })(i);
+  }
+  highlightThumb(0);
+}
+function highlightThumb(idx){
+  const sr=S.series[S.activeUID]; if(!sr) return;
+  const step=Math.max(1,Math.floor(sr.instances.length/Math.min(16,sr.instances.length)));
+  document.querySelectorAll('.thumb').forEach(t=>{ t.classList.toggle('active',Math.abs(parseInt(t.dataset.idx)-idx)<step); });
+}
+
+// ─── VIEWPORT SWITCH ────────────────────────────────────────────────────────────
+function showViewport(){
+  $('welcome').style.display='none'; $('vtabs').style.display='flex'; $('vcontent').style.display='block';
+  switchView('2d');
+}
+function switchView(mode){
+  $('t2d').classList.toggle('active',mode==='2d');
+  $('tmpr').classList.toggle('active',mode==='mpr');
+  $('t3d').classList.toggle('active',mode==='3d');
+  $('v2d').style.display=mode==='2d'?'flex':'none';
+  $('v3d').style.display=mode==='3d'?'block':'none';
+  $('vmpr').style.display=mode==='mpr'?'block':'none';
+  $('ctrl3d').style.display=mode==='3d'?'block':'none';
+  if(mode==='3d') init3D();
+  if(mode==='mpr') initMPR();
+}
+
+// ─── MPR ────────────────────────────────────────────────────────────────────────
+async function initMPR(){
+  const sr=S.series[S.activeUID]; if(!sr||sr.instances.length<3){ toast('Se necesitan >=3 imágenes para MPR','err'); return; }
+  showLD(true,'Preparando MPR...');
+  const mid=Math.floor(sr.instances.length/2);
+  const inst=await decode(sr.instances[mid]);
+  showLD(false);
+  for(const id of ['mAxial','mCoronal','mSagittal']){
+    const c=$(id); if(!c) continue;
+    const pane=c.parentElement;
+    c.width=pane.clientWidth||256; c.height=pane.clientHeight||256;
+    const ctx=c.getContext('2d'), imgD=ctx.createImageData(c.width,c.height);
+    const sx=inst.cols/c.width, sy=inst.rows/c.height, wwMin=S.wc-S.ww/2, wwR=S.ww||1;
+    for(let y=0;y<c.height;y++) for(let x=0;x<c.width;x++){
+      let v=Math.round(((inst.hu[Math.floor(y*sy)*inst.cols+Math.floor(x*sx)]-wwMin)/wwR)*255);
+      v=Math.max(0,Math.min(255,v));
+      const i4=(y*c.width+x)*4; imgD.data[i4]=v; imgD.data[i4+1]=v; imgD.data[i4+2]=v; imgD.data[i4+3]=255;
+    }
+    ctx.putImageData(imgD,0,0);
+    if(id==='mCoronal'||id==='mSagittal'){
+      const tmp=document.createElement('canvas'); tmp.width=c.height; tmp.height=c.width;
+      const tx=tmp.getContext('2d'); tx.translate(tmp.width/2,tmp.height/2); tx.rotate(Math.PI/2); tx.drawImage(c,-c.width/2,-c.height/2);
+      ctx.clearRect(0,0,c.width,c.height); ctx.drawImage(tmp,0,0,c.width,c.height);
+    }
+  }
+  toast('MPR listo','cyan');
+}
+
+// ─── 3D ─────────────────────────────────────────────────────────────────────────
+async function init3D(){
+  const sr=S.series[S.activeUID];
+  if(!sr||sr.instances.length<2){ toast('Se necesitan >=2 imágenes para 3D','err'); return; }
+  const cont=$('v3d'), W=cont.clientWidth, H=cont.clientHeight;
+  const threeCanvas=$('threeCanvas');
+
+  if(S.renderer3){
+    // already built — just resize and return
+    S.renderer3.setSize(W,H); S.cam3.aspect=W/H; S.cam3.updateProjectionMatrix(); return;
+  }
+
+  showLD(true,'Cargando volumen 3D...'); showPG(true);
+  const renderer=new THREE.WebGLRenderer({canvas:threeCanvas,antialias:true});
+  renderer.setSize(W,H); renderer.setPixelRatio(Math.min(devicePixelRatio,2)); renderer.setClearColor(0x000000,1);
+  S.renderer3=renderer;
+
+  const scene=new THREE.Scene(); S.scene3=scene;
+  const cam=new THREE.PerspectiveCamera(50,W/H,.1,3000); cam.position.z=350; S.cam3=cam;
+  scene.add(new THREE.AmbientLight(0xffffff,.5));
+  const dl=new THREE.DirectionalLight(0x00d4ff,.7); dl.position.set(1,1,1); scene.add(dl);
+
+  // Load slices (max 60 for perf)
+  const total=sr.instances.length, maxSl=Math.min(60,total), step2=Math.max(1,Math.floor(total/maxSl));
+  const slices=[];
+  for(let si=0;si<total;si+=step2){
+    try{ slices.push(await decode(sr.instances[si])); } catch{}
+    if(si%5===0){ setPG(Math.round(si/total*85)); $('ldtxt').textContent=`Cargando slice ${slices.length}/${maxSl}...`; await yield_(); }
+  }
+
+  S.volSlices=slices;
+  buildSpriteVolume();
+  setPG(100); setTimeout(()=>showPG(false),400); showLD(false);
+
+  // Orbit controls (manual)
+  threeCanvas.addEventListener('mousedown',e=>{S.d3=true;S.d3sx=e.clientX;S.d3sy=e.clientY;e.stopPropagation();});
+  window.addEventListener('mouseup',()=>S.d3=false);
+  window.addEventListener('mousemove',e=>{
+    if(!S.d3) return;
+    S.rot3Y+=(e.clientX-S.d3sx)*.01; S.rot3X+=(e.clientY-S.d3sy)*.01;
+    S.d3sx=e.clientX; S.d3sy=e.clientY;
+    S.rot3X=Math.max(-Math.PI/2,Math.min(Math.PI/2,S.rot3X));
+    if(S.scene3) S.scene3.rotation.set(S.rot3X,S.rot3Y,0);
+  });
+  threeCanvas.addEventListener('wheel',e=>{ e.preventDefault(); e.stopPropagation(); S.zoom3=Math.max(.1,Math.min(5,S.zoom3*(e.deltaY>0?1.08:.92))); cam.position.z=350*S.zoom3; },{passive:false});
+  new ResizeObserver(()=>{ const W2=cont.clientWidth,H2=cont.clientHeight; cam.aspect=W2/H2; cam.updateProjectionMatrix(); renderer.setSize(W2,H2); }).observe(cont);
+
+  let anim=true;
+  (function loop(){ if(!anim) return; requestAnimationFrame(loop); renderer.render(scene,cam); })();
+  toast('Volumen 3D listo','cyan');
+}
+
+function buildSpriteVolume(){
+  if(!S.scene3||!S.volSlices) return;
+  // Remove old slice planes (keep lights: first 2 children)
+  while(S.scene3.children.length>2) S.scene3.remove(S.scene3.children[S.scene3.children.length-1]);
+
+  const slices=S.volSlices, depth=slices.length;
+  const imgW=slices[0].cols, imgH=slices[0].rows;
+  const spacing=Math.max(imgH,imgW)/depth*.8;
+  const thresh=parseFloat($('thS')?.value||-300);
+  const wwMin=S.wc-S.ww/2, wwR=S.ww||1;
+
+  slices.forEach((inst,si)=>{
+    const tc=document.createElement('canvas'); tc.width=imgW; tc.height=imgH;
+    const ctx=tc.getContext('2d'), imgD=ctx.createImageData(imgW,imgH);
+    for(let i=0;i<inst.hu.length;i++){
+      const hu=inst.hu[i];
+      let norm=(hu-wwMin)/wwR; norm=Math.max(0,Math.min(1,norm));
+      const v=Math.round(norm*255);
+      let [r,g,b]=[v,v,v];
+      if(S.colormap==='hot'){ r=Math.min(255,v*3); g=Math.min(255,Math.max(0,(v-85)*3)); b=Math.min(255,Math.max(0,(v-170)*3)); }
+      else if(S.colormap==='viridis'){ const t=norm; r=Math.round((-.0002*t**3+.2784*t**2-.0596*t+.267)*255); g=Math.round((.8739*t**2-.3576*t+.1354)*255); b=Math.round((-.8*t**2+.2*t+.5)*255); }
+      else if(S.colormap==='cool'){ r=Math.round((1-norm)*255); g=Math.round(norm*255); b=255; }
+      const alpha=hu<thresh?0:Math.min(255,Math.round(norm*160));
+      imgD.data[i*4]=r; imgD.data[i*4+1]=g; imgD.data[i*4+2]=b; imgD.data[i*4+3]=alpha;
+    }
+    ctx.putImageData(imgD,0,0);
+    const tex=new THREE.CanvasTexture(tc);
+    const mat=new THREE.MeshBasicMaterial({map:tex,transparent:true,side:THREE.DoubleSide,depthWrite:false});
+    const plane=new THREE.Mesh(new THREE.PlaneGeometry(imgW,imgH),mat);
+    plane.position.z=(si-depth/2)*spacing;
+    S.scene3.add(plane);
+  });
+}
+
+function set3DMode(mode){
+  S.mode3=mode;
+  for(const m of ['vol','mip','iso']) $('b3'+m).classList.toggle('active',m===mode);
+  toast('3D: '+mode.toUpperCase(),'cyan');
+}
+function update3DOpacity(v){ $('opVal').textContent=(v/100).toFixed(2); }
+function update3DThreshold(v){ $('thVal').textContent=v; if(S.volSlices) buildSpriteVolume(); }
+function setColormap(n){ S.colormap=n; document.querySelectorAll('.cmbtn').forEach(b=>b.classList.toggle('active',b.dataset.cm===n)); if(S.volSlices) buildSpriteVolume(); toast('Colormap: '+n,'cyan'); }
+function reset3DCam(){ S.rot3X=0; S.rot3Y=0; S.zoom3=1; if(S.cam3) S.cam3.position.set(0,0,350); if(S.scene3) S.scene3.rotation.set(0,0,0); }
+
+// ─── EXPORT ─────────────────────────────────────────────────────────────────────
+function exportPNG(){
+  const c=$('dicomCanvas'); if(!c.width){ toast('No hay imagen cargada','err'); return; }
+  const link=document.createElement('a'); link.href=c.toDataURL('image/png'); link.download=`slice-${S.slice+1}.png`; link.click();
+  toast('Exportado: slice-'+(S.slice+1)+'.png','cyan');
+}
+function resetView(){
+  S.zoom=1; S.panX=0; S.panY=0; S.inverted=false; $('tlinv').classList.remove('active'); applyTransform(); repaint(); reset3DCam();
+  toast('Vista reseteada');
+}
+
+// ─── KEYBOARD ────────────────────────────────────────────────────────────────────
+document.addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT') return;
+  switch(e.key.toLowerCase()){
+    case 'w': setTool('wl'); break;
+    case 'z': setTool('zoom'); break;
+    case 'p': setTool('pan'); break;
+    case 'l': setTool('len'); break;
+    case 'i': toggleInvert(); break;
+    case 'r': resetView(); break;
+    case 'escape': clearAnnotations(); break;
+    case 'arrowleft': case 'arrowup': e.preventDefault(); goSlice(S.slice-1); break;
+    case 'arrowright': case 'arrowdown': e.preventDefault(); goSlice(S.slice+1); break;
+    case '1': preset('brain'); break;
+    case '2': preset('lung'); break;
+    case '3': preset('bone'); break;
+    case '4': preset('abdomen'); break;
+    case '5': preset('liver'); break;
+  }
+});
+
+function showKeys(){
+  alert(`Keyboard Shortcuts\n\nW  Window/Level\nZ  Zoom\nP  Pan\nL  Length measure\nI  Invert\nR  Reset view\nEsc  Clear annotations\n\nLeft/Right arrows  Slice navigation\nScroll  Slice navigation\nCtrl+Scroll  Zoom\n\n1 Brain  2 Lung  3 Bone  4 Abdomen  5 Liver`);
+}
+
+
+function showAbout(){
+  const m = document.getElementById('aboutModal');
+  m.style.display = 'flex';
+}
+function closeAbout(){
+  document.getElementById('aboutModal').style.display = 'none';
+}
+// Close on backdrop click — deferred until DOM is ready
+window.addEventListener('load', function(){
+  const m = document.getElementById('aboutModal');
+  if(m) m.addEventListener('click', function(e){ if(e.target === this) closeAbout(); });
+});
+
+window.addEventListener('resize',()=>{ const sr=S.series[S.activeUID]; if(!sr) return; const inst=sr.instances[S.slice]; if(inst?.hu){ paintCanvas(inst); renderAnnotations(); } });
+setStatus('Ready — carga una carpeta DICOM para comenzar','ok');
+</script>
+
+<!-- ABOUT MODAL -->
+<div id="aboutModal" style="display:none;position:fixed;inset:0;z-index:2000;background:rgba(6,10,14,.85);backdrop-filter:blur(6px);align-items:center;justify-content:center">
+  <div style="background:var(--bg2);border:1px solid var(--b1);border-radius:6px;max-width:520px;width:90%;padding:0;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.7)">
+    <!-- Modal header -->
+    <div style="background:var(--bg1);border-bottom:1px solid var(--b0);padding:14px 20px;display:flex;align-items:center;gap:10px">
+      <div style="font-family:var(--mono);font-size:13px;font-weight:600;color:var(--cyan);letter-spacing:.15em;display:flex;align-items:center;gap:8px">
+        <span style="width:8px;height:8px;background:var(--cyan);border-radius:50%;box-shadow:0 0 8px var(--cyan);display:inline-block"></span>
+        MedVis Studio
+      </div>
+      <button onclick="closeAbout()" style="margin-left:auto;background:transparent;border:1px solid var(--b1);color:var(--t2);font-family:var(--mono);font-size:11px;padding:3px 10px;border-radius:3px;cursor:pointer;transition:all .15s" onmouseover="this.style.borderColor='var(--mag)';this.style.color='var(--mag)'" onmouseout="this.style.borderColor='var(--b1)';this.style.color='var(--t2)'">&#10005; Cerrar</button>
+    </div>
+    <!-- Modal body -->
+    <div style="padding:24px 28px;display:flex;flex-direction:column;gap:20px">
+      <!-- App info -->
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <div style="font-family:var(--mono);font-size:9px;color:var(--t2);letter-spacing:.15em;text-transform:uppercase;margin-bottom:4px">Aplicación</div>
+        <div style="font-size:14px;font-weight:600;color:var(--t0)">DICOM Viewer — MedVis Studio</div>
+        <div style="font-family:var(--mono);font-size:11px;color:var(--t1)">Versión <span style="color:var(--cyan)">2.0</span> &nbsp;&middot;&nbsp; HTML5 · dicom-parser · Three.js</div>
+        <div style="font-family:var(--mono);font-size:10px;color:var(--t1);line-height:1.7;margin-top:4px">
+          Visor DICOM local de uso clínico-educativo. Soporta CT, MRI, CR, DX y US.<br>
+          Renderizado 2D, MPR y volumétrico 3D. Sin servidor. Sin envío de datos.
+        </div>
+      </div>
+      <!-- Divider -->
+      <div style="height:1px;background:var(--b0)"></div>
+      <!-- Author -->
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <div style="font-family:var(--mono);font-size:9px;color:var(--t2);letter-spacing:.15em;text-transform:uppercase;margin-bottom:4px">Autor</div>
+        <div style="display:flex;align-items:center;gap:12px">
+          <div style="width:36px;height:36px;background:rgba(0,212,255,.1);border:1px solid var(--cyan);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">&#128104;&#8205;&#128187;</div>
+          <div>
+            <div style="font-size:13px;font-weight:600;color:var(--t0)">José Manuel Fernández Carreira</div>
+            <div style="font-family:var(--mono);font-size:10px;color:var(--t1)">Desarrollo &amp; Diseño</div>
+          </div>
+        </div>
+      </div>
+      <!-- Divider -->
+      <div style="height:1px;background:var(--b0)"></div>
+      <!-- Acknowledgements -->
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div style="font-family:var(--mono);font-size:9px;color:var(--t2);letter-spacing:.15em;text-transform:uppercase;margin-bottom:4px">Agradecimientos</div>
+        <div style="display:flex;align-items:flex-start;gap:12px;padding:10px 12px;background:var(--bg3);border-radius:4px;border:1px solid var(--b0)">
+          <div style="width:32px;height:32px;background:rgba(255,0,119,.08);border:1px solid var(--mag);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0">&#129657;</div>
+          <div>
+            <div style="font-size:12px;font-weight:600;color:var(--t0)">Carmen Campos Álvarez</div>
+            <div style="font-family:var(--mono);font-size:10px;color:var(--cyan);margin-top:2px">Radióloga</div>
+            <div style="font-family:var(--mono);font-size:10px;color:var(--t1);margin-top:1px">Hospital Universitario San Agustín &middot; Avilés</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:flex-start;gap:12px;padding:10px 12px;background:var(--bg3);border-radius:4px;border:1px solid var(--b0)">
+          <div style="width:32px;height:32px;background:rgba(255,0,119,.08);border:1px solid var(--mag);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0">&#129657;</div>
+          <div>
+            <div style="font-size:12px;font-weight:600;color:var(--t0)">M&#170; Elba González Díaz</div>
+            <div style="font-family:var(--mono);font-size:10px;color:var(--cyan);margin-top:2px">Radióloga</div>
+            <div style="font-family:var(--mono);font-size:10px;color:var(--t1);margin-top:1px">Hospital de Jarrio</div>
+          </div>
+        </div>
+      </div>
+      <!-- Divider -->
+      <div style="height:1px;background:var(--b0)"></div>
+      <!-- Disclaimer -->
+      <div style="font-family:var(--mono);font-size:9.5px;color:var(--t2);line-height:1.7;padding:8px 10px;background:rgba(255,170,0,.05);border:1px solid rgba(255,170,0,.15);border-radius:3px">
+        &#9888; Este software es de uso educativo y de investigación. No está certificado como
+        dispositivo médico. No debe utilizarse como único instrumento de diagnóstico clínico.
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
