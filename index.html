@@ -414,11 +414,11 @@ async function processFiles(rawFiles){
       }
       let ds;
       try{
-        // Parse full file — needed for encapsulated (JPEG/RLE) pixel data fragments
-        ds=dicomParser.parseDicom(bytes);
+        // Parse metadata only (fast & reliable) — pixel data read from raw buf in decode()
+        ds=dicomParser.parseDicom(bytes, {untilTag:'7FE00010'});
       } catch(e1){
-        try{ ds=dicomParser.parseDicom(bytes,{untilTag:'7FE00010'}); }
-        catch{ errors++;continue; }
+        try{ ds=dicomParser.parseDicom(bytes); }
+        catch{ errors++; continue; }
       }
 
       const uid = tg(ds,'x0020000e') || ('SER_'+i);
@@ -560,12 +560,34 @@ function extractEncapsulatedBytes(ds, buf){
 async function decode(inst){
   if(inst.hu) return inst;
   const ds=inst.ds, buf=inst.buf;
+  const bytes=new Uint8Array(buf);
 
-  const rows  = safeInt(tg(ds,'x00280010'), 0);
-  const cols  = safeInt(tg(ds,'x00280011'), 0);
-  const bitsA = safeInt(tg(ds,'x00280100'), 16);
-  const bitsS = safeInt(tg(ds,'x00280101'), bitsA);
-  const pixRp = safeInt(tg(ds,'x00280103'), 0);  // 0=unsigned, 1=signed
+  // ── Read dimensions from ds (from metadata parse) ───────────────────────────
+  // If metadata parse didn't get them, scan the raw buffer for the tags
+  let rows = safeInt(tg(ds,'x00280010'), 0);
+  let cols  = safeInt(tg(ds,'x00280011'), 0);
+  let bitsA = safeInt(tg(ds,'x00280100'), 16);
+  let bitsS = safeInt(tg(ds,'x00280101'), bitsA);
+  let pixRp = safeInt(tg(ds,'x00280103'), 0);
+
+  // Fallback: scan raw bytes for known dimension tags (Little Endian)
+  if(rows===0 || cols===0){
+    for(let off=128;off<bytes.length-8;off+=2){
+      const g=(bytes[off+1]<<8)|bytes[off];
+      const e=(bytes[off+3]<<8)|bytes[off+2];
+      const len=(bytes[off+7]<<24)|(bytes[off+6]<<16)|(bytes[off+5]<<8)|bytes[off+4];
+      if(g===0x0028 && e===0x0010 && len===2 && rows===0)
+        rows=(bytes[off+9]<<8)|bytes[off+8];
+      if(g===0x0028 && e===0x0011 && len===2 && cols===0)
+        cols=(bytes[off+9]<<8)|bytes[off+8];
+      if(g===0x0028 && e===0x0100 && len===2)
+        bitsA=(bytes[off+9]<<8)|bytes[off+8];
+      if(g===0x0028 && e===0x0103 && len===2)
+        pixRp=(bytes[off+9]<<8)|bytes[off+8];
+      if(rows>0 && cols>0 && off>1000) break;
+    }
+  }
+  // bitsA, bitsS, pixRp already declared above (with let) — just add remaining
   const slope = safeFloat(tg(ds,'x00281053'), 1);
   const inter = safeFloat(tg(ds,'x00281052'), 0);
   const samplesPerPixel = safeInt(tg(ds,'x00280002'), 1);
@@ -575,8 +597,41 @@ async function decode(inst){
   if(rows<=0||rows>10000||cols<=0||cols>10000)
     throw new Error(`Dimensiones inválidas: ${rows}x${cols} en ${inst.file.name}`);
 
-  const pixEl = ds.elements['x7fe00010'];
-  if(!pixEl) throw new Error('Sin datos de píxel en: '+inst.file.name);
+  // Find pixel data — first try ds.elements, then scan raw buffer
+  let pixEl = ds.elements['x7fe00010'];
+  let pixDataOffset = pixEl?.dataOffset ?? 0;
+  let pixDataLength = pixEl?.length ?? 0;
+  let pixEncapsulated = pixEl ? isEncapsulated(pixEl) : false;
+
+  if(!pixEl || pixDataOffset === 0){
+    // Scan raw bytes for 7FE0,0010 tag
+    for(let off=128; off<bytes.length-12; off+=2){
+      const g=(bytes[off+1]<<8)|bytes[off];
+      const e=(bytes[off+3]<<8)|bytes[off+2];
+      if(g===0x7FE0 && e===0x0010){
+        // Could be explicit (has VR bytes) or implicit
+        // Check for OB/OW VR
+        const vr=String.fromCharCode(bytes[off+4],bytes[off+5]);
+        if(vr==='OB'||vr==='OW'||vr==='UN'){
+          // Explicit with 4-byte length after 2 reserved bytes
+          const len32=(bytes[off+11]<<24)|(bytes[off+10]<<16)|(bytes[off+9]<<8)|bytes[off+8];
+          pixDataOffset=off+12;
+          pixDataLength=len32;
+          pixEncapsulated=(len32===0xFFFFFFFF||len32===4294967295);
+        } else {
+          // Implicit or short explicit
+          const len32=(bytes[off+7]<<24)|(bytes[off+6]<<16)|(bytes[off+5]<<8)|bytes[off+4];
+          pixDataOffset=off+8;
+          pixDataLength=len32;
+          pixEncapsulated=(len32===0xFFFFFFFF||len32===4294967295);
+        }
+        console.log(`[decode] Found pixel tag at offset ${pixDataOffset}, len=${pixDataLength}, encap=${pixEncapsulated}`);
+        break;
+      }
+    }
+  }
+
+  if(pixDataOffset===0) throw new Error('Sin datos de píxel en: '+inst.file.name);
 
   const expectedPixels = rows * cols;
   const hu = new Float32Array(expectedPixels);
@@ -591,14 +646,14 @@ async function decode(inst){
   // ── RLE ───────────────────────────────────────────────────────────────────────
   const isRLE = ts==='1.2.840.10008.1.2.5';
   // ── Implicit / Explicit uncompressed ─────────────────────────────────────────
-  const isUncompressed = !isEncapsulated(pixEl);
+  const isUncompressed = !pixEncapsulated;
 
   console.log(`[decode] ${inst.file.name} | TS:${ts} | ${rows}x${cols} | ${bitsA}bit | encap:${!isUncompressed}`);
 
   if(isUncompressed){
     // ── PATH A: Uncompressed raw pixel data ──────────────────────────────────
-    const byteLen = Math.min(pixEl.length, buf.byteLength - pixEl.dataOffset);
-    const rawCopy = new Uint8Array(buf, pixEl.dataOffset, byteLen).slice();
+    const byteLen = Math.min(pixDataLength, buf.byteLength - pixDataOffset);
+    const rawCopy = new Uint8Array(buf, pixDataOffset, byteLen).slice();
 
     let px;
     if(bitsA<=8){
