@@ -414,11 +414,22 @@ async function processFiles(rawFiles){
       }
       let ds;
       try{
-        // Parse metadata only (fast & reliable) — pixel data read from raw buf in decode()
-        ds=dicomParser.parseDicom(bytes, {untilTag:'7FE00010'});
+        // Try full parse first (gets all tags including encapsulated items)
+        ds = dicomParser.parseDicom(bytes);
       } catch(e1){
-        try{ ds=dicomParser.parseDicom(bytes); }
-        catch{ errors++; continue; }
+        try{
+          // Fallback: parse until pixel data (faster, works for most files)
+          ds = dicomParser.parseDicom(bytes, {untilTag:'7FE00010'});
+        } catch(e2){
+          errors++; continue;
+        }
+      }
+      // If full parse didn't get dimensions, try the untilTag version
+      if(!tg(ds,'x00280010') || !tg(ds,'x00280011')){
+        try{
+          const ds2 = dicomParser.parseDicom(bytes, {untilTag:'7FE00010'});
+          if(tg(ds2,'x00280010')) ds = ds2;
+        } catch{}
       }
 
       const uid = tg(ds,'x0020000e') || ('SER_'+i);
@@ -561,32 +572,65 @@ async function decode(inst){
   if(inst.hu) return inst;
   const ds=inst.ds, buf=inst.buf;
   const bytes=new Uint8Array(buf);
+  const dv=new DataView(buf);
 
-  // ── Read dimensions from ds (from metadata parse) ───────────────────────────
-  // If metadata parse didn't get them, scan the raw buffer for the tags
+  // ── Read dimensions — try dataset first, then raw buffer scan ───────────────
   let rows = safeInt(tg(ds,'x00280010'), 0);
   let cols  = safeInt(tg(ds,'x00280011'), 0);
   let bitsA = safeInt(tg(ds,'x00280100'), 16);
   let bitsS = safeInt(tg(ds,'x00280101'), bitsA);
   let pixRp = safeInt(tg(ds,'x00280103'), 0);
 
-  // Fallback: scan raw bytes for known dimension tags (Little Endian)
+  // Raw buffer scan — walks the DICOM data element by element (Little Endian)
   if(rows===0 || cols===0){
-    for(let off=128;off<bytes.length-8;off+=2){
-      const g=(bytes[off+1]<<8)|bytes[off];
-      const e=(bytes[off+3]<<8)|bytes[off+2];
-      const len=(bytes[off+7]<<24)|(bytes[off+6]<<16)|(bytes[off+5]<<8)|bytes[off+4];
-      if(g===0x0028 && e===0x0010 && len===2 && rows===0)
-        rows=(bytes[off+9]<<8)|bytes[off+8];
-      if(g===0x0028 && e===0x0011 && len===2 && cols===0)
-        cols=(bytes[off+9]<<8)|bytes[off+8];
-      if(g===0x0028 && e===0x0100 && len===2)
-        bitsA=(bytes[off+9]<<8)|bytes[off+8];
-      if(g===0x0028 && e===0x0103 && len===2)
-        pixRp=(bytes[off+9]<<8)|bytes[off+8];
-      if(rows>0 && cols>0 && off>1000) break;
+    // Start after 128-byte preamble + "DICM" magic (offset 132)
+    // or from 0 if no preamble (implicit DICOM)
+    const startOff = (bytes[128]===0x44&&bytes[129]===0x49)?132:0;
+    let off = startOff;
+    let iter = 0;
+    while(off < bytes.length-8 && iter++<20000){
+      const grp = dv.getUint16(off, true);      // little-endian group
+      const el  = dv.getUint16(off+2, true);    // little-endian element
+
+      // Detect VR type: Explicit has ASCII VR at bytes off+4,off+5
+      const vr = String.fromCharCode(bytes[off+4], bytes[off+5]);
+      const isLongExplicit = ['OB','OW','SQ','UC','UN','UR','UT'].includes(vr);
+      const isShortExplicit = /^[A-Z]{2}$/.test(vr) && !isLongExplicit;
+
+      let valOff, len;
+      if(isLongExplicit){
+        len = dv.getUint32(off+8, true);
+        valOff = off+12;
+      } else if(isShortExplicit){
+        len = dv.getUint16(off+6, true);
+        valOff = off+8;
+      } else {
+        // Implicit VR
+        len = dv.getUint32(off+4, true);
+        valOff = off+8;
+      }
+
+      // Sequence / undefined length — skip, can't reliably traverse
+      if(len===0xFFFFFFFF){ off+=8; continue; }
+      // Sanity: len too large
+      if(valOff+len > bytes.length){ off+=2; continue; }
+
+      if(grp===0x0028){
+        if(el===0x0010 && len===2 && rows===0) rows=dv.getUint16(valOff,true);
+        if(el===0x0011 && len===2 && cols===0) cols=dv.getUint16(valOff,true);
+        if(el===0x0100 && len===2) bitsA=dv.getUint16(valOff,true);
+        if(el===0x0101 && len===2) bitsS=dv.getUint16(valOff,true);
+        if(el===0x0103 && len===2) pixRp=dv.getUint16(valOff,true);
+      }
+      if(grp===0x7FE0 && el===0x0010) break; // reached pixel data — stop
+      if(rows>0 && cols>0 && grp>0x0028) break; // got what we need
+
+      off = valOff + (len%2===0 ? len : len+1); // advance with padding
     }
+    console.log(`[scan] rows=${rows} cols=${cols} bitsA=${bitsA} pixRp=${pixRp} at off=${off}`);
   }
+
+  const dsF = ds; // alias for pixel element lookup
   // bitsA, bitsS, pixRp already declared above (with let) — just add remaining
   const slope = safeFloat(tg(ds,'x00281053'), 1);
   const inter = safeFloat(tg(ds,'x00281052'), 0);
@@ -594,11 +638,13 @@ async function decode(inst){
   const photometric = (tg(ds,'x00280004')||'').trim().toUpperCase();
   const ts = getTransferSyntax(ds);
 
-  if(rows<=0||rows>10000||cols<=0||cols>10000)
-    throw new Error(`Dimensiones inválidas: ${rows}x${cols} en ${inst.file.name}`);
+  if(rows<=0||rows>10000||cols<=0||cols>10000){
+    console.error('[decode] Invalid dims:', rows, cols, 'file:', inst.file.name, 'ds tags:', tg(ds,'x00280010'), tg(ds,'x00280011'));
+    throw new Error(`Dimensiones inválidas: ${rows}x${cols} en ${inst.file.name} — puede ser formato no soportado`);
+  }
 
-  // Find pixel data — first try ds.elements, then scan raw buffer
-  let pixEl = ds.elements['x7fe00010'];
+  // Find pixel data — use full-parse dataset first
+  let pixEl = dsF.elements['x7fe00010'] || ds.elements['x7fe00010'];
   let pixDataOffset = pixEl?.dataOffset ?? 0;
   let pixDataLength = pixEl?.length ?? 0;
   let pixEncapsulated = pixEl ? isEncapsulated(pixEl) : false;
