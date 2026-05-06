@@ -413,8 +413,13 @@ async function processFiles(rawFiles){
         } else { errors++; continue; }
       }
       let ds;
-      try{ ds=dicomParser.parseDicom(bytes,{untilTag:'7FE00010'}); }
-      catch{ try{ ds=dicomParser.parseDicom(bytes); }catch{ errors++;continue; } }
+      try{
+        // Parse full file — needed for encapsulated (JPEG/RLE) pixel data fragments
+        ds=dicomParser.parseDicom(bytes);
+      } catch(e1){
+        try{ ds=dicomParser.parseDicom(bytes,{untilTag:'7FE00010'}); }
+        catch{ errors++;continue; }
+      }
 
       const uid = tg(ds,'x0020000e') || ('SER_'+i);
       const n   = parseInt(tg(ds,'x00200013')||'0')||i;
@@ -505,63 +510,174 @@ async function loadSeries(uid){
 function safeInt(val, fallback){ const n=parseInt((val||'').toString().trim()); return (isFinite(n)&&n>0)?n:fallback; }
 function safeFloat(val, fallback){ const n=parseFloat((val||'').toString().trim()); return isFinite(n)?n:fallback; }
 
+// Detect Transfer Syntax from DICOM dataset
+function getTransferSyntax(ds){
+  try{ return (ds.string('x00020010')||'').trim(); } catch{ return '1.2.840.10008.1.2.1'; } // default: Explicit Little Endian
+}
+
+// Check if pixel data element is encapsulated (undefined length = 0xFFFFFFFF)
+function isEncapsulated(el){ return el.length === undefined || el.length === 4294967295 || el.hadUndefinedLength; }
+
+// Decode JPEG baseline (8-bit) fragment via browser Image element
+function decodeJPEGfragment(jpegBytes){
+  return new Promise((resolve, reject)=>{
+    const blob = new Blob([jpegBytes], {type:'image/jpeg'});
+    const url  = URL.createObjectURL(blob);
+    const img  = new Image();
+    img.onload = ()=>{
+      const c = document.createElement('canvas');
+      c.width=img.width; c.height=img.height;
+      const ctx=c.getContext('2d');
+      ctx.drawImage(img,0,0);
+      const imageData=ctx.getImageData(0,0,img.width,img.height);
+      URL.revokeObjectURL(url);
+      resolve({ data:imageData.data, width:img.width, height:img.height });
+    };
+    img.onerror = ()=>{ URL.revokeObjectURL(url); reject(new Error('JPEG decode failed')); };
+    img.src=url;
+  });
+}
+
+// Extract pixel bytes from encapsulated (fragmented) pixel data
+function extractEncapsulatedBytes(ds, buf){
+  const pixEl = ds.elements['x7fe00010'];
+  if(!pixEl || !pixEl.items) return null;
+  // Concatenate all fragment bytes (skip first item which is the offset table)
+  const fragments = pixEl.items.filter(item => item.dataOffset !== undefined);
+  // Skip offset table (first item if it has length 0 or is the table)
+  const dataFragments = fragments.length > 1 ? fragments.slice(1) : fragments;
+  const totalLen = dataFragments.reduce((acc,f)=>acc+(f.length||0), 0);
+  const result = new Uint8Array(totalLen);
+  let offset=0;
+  for(const f of dataFragments){
+    const bytes = new Uint8Array(buf, f.dataOffset, f.length||0);
+    result.set(bytes, offset);
+    offset += f.length||0;
+  }
+  return result;
+}
+
 async function decode(inst){
   if(inst.hu) return inst;
   const ds=inst.ds, buf=inst.buf;
 
-  // Robustly parse dimensions — DICOM strings may have padding/whitespace
-  const rows  = safeInt(tg(ds,'x00280010'), 512);
-  const cols  = safeInt(tg(ds,'x00280011'), 512);
+  const rows  = safeInt(tg(ds,'x00280010'), 0);
+  const cols  = safeInt(tg(ds,'x00280011'), 0);
   const bitsA = safeInt(tg(ds,'x00280100'), 16);
-  const pixRp = safeInt(tg(ds,'x00280103'), 0);
+  const bitsS = safeInt(tg(ds,'x00280101'), bitsA);
+  const pixRp = safeInt(tg(ds,'x00280103'), 0);  // 0=unsigned, 1=signed
   const slope = safeFloat(tg(ds,'x00281053'), 1);
   const inter = safeFloat(tg(ds,'x00281052'), 0);
+  const samplesPerPixel = safeInt(tg(ds,'x00280002'), 1);
+  const photometric = (tg(ds,'x00280004')||'').trim().toUpperCase();
+  const ts = getTransferSyntax(ds);
 
-  // Validate dimensions before proceeding
   if(rows<=0||rows>10000||cols<=0||cols>10000)
-    throw new Error(`Dimensiones inválidas: rows=${rows} cols=${cols} en ${inst.file.name}`);
+    throw new Error(`Dimensiones inválidas: ${rows}x${cols} en ${inst.file.name}`);
 
-  const el2=ds.elements['x7fe00010'];
-  if(!el2) throw new Error('Sin datos de píxel en: '+inst.file.name);
+  const pixEl = ds.elements['x7fe00010'];
+  if(!pixEl) throw new Error('Sin datos de píxel en: '+inst.file.name);
 
-  // Copy raw bytes to avoid alignment issues with typed array views on shared buffers
-  const byteLen = el2.length;
-  const rawSlice = new Uint8Array(buf, el2.dataOffset, byteLen);
-  const rawCopy  = rawSlice.slice(); // force aligned copy
-
-  let px;
   const expectedPixels = rows * cols;
-  if(bitsA<=8){
-    px = rawCopy;
-  } else {
-    // Ensure even byte length for 16-bit
-    const evenLen = rawCopy.byteLength - (rawCopy.byteLength % 2);
-    const aligned = rawCopy.buffer.slice(rawCopy.byteOffset, rawCopy.byteOffset + evenLen);
-    px = pixRp===1 ? new Int16Array(aligned) : new Uint16Array(aligned);
-  }
-
-  // If pixel count doesn't match, try to recover
-  if(px.length < expectedPixels){
-    console.warn(`Pixel count mismatch: got ${px.length}, expected ${expectedPixels} for ${inst.file.name}`);
-    // Pad or truncate
-    const padded = bitsA<=8 ? new Uint8Array(expectedPixels) : (pixRp===1 ? new Int16Array(expectedPixels) : new Uint16Array(expectedPixels));
-    padded.set(px.subarray(0, Math.min(px.length, expectedPixels)));
-    px = padded;
-  }
-
-  const hu=new Float32Array(expectedPixels);
+  const hu = new Float32Array(expectedPixels);
   let minHU=Infinity, maxHU=-Infinity;
-  for(let i=0;i<expectedPixels;i++){
-    const v=(px[i]||0)*slope+inter; hu[i]=v;
-    if(v<minHU) minHU=v; if(v>maxHU) maxHU=v;
+
+  // ── JPEG Baseline (8-bit lossy) ──────────────────────────────────────────────
+  const isJPEGBaseline = ts==='1.2.840.10008.1.2.4.50' || ts==='1.2.840.10008.1.2.4.51';
+  // ── JPEG Lossless ─────────────────────────────────────────────────────────────
+  const isJPEGLossless = ts.startsWith('1.2.840.10008.1.2.4.5') || ts.startsWith('1.2.840.10008.1.2.4.7') || ts.startsWith('1.2.840.10008.1.2.4.8') || ts==='1.2.840.10008.1.2.4.57' || ts==='1.2.840.10008.1.2.4.70';
+  // ── JPEG 2000 ─────────────────────────────────────────────────────────────────
+  const isJP2 = ts.startsWith('1.2.840.10008.1.2.4.9');
+  // ── RLE ───────────────────────────────────────────────────────────────────────
+  const isRLE = ts==='1.2.840.10008.1.2.5';
+  // ── Implicit / Explicit uncompressed ─────────────────────────────────────────
+  const isUncompressed = !isEncapsulated(pixEl);
+
+  console.log(`[decode] ${inst.file.name} | TS:${ts} | ${rows}x${cols} | ${bitsA}bit | encap:${!isUncompressed}`);
+
+  if(isUncompressed){
+    // ── PATH A: Uncompressed raw pixel data ──────────────────────────────────
+    const byteLen = Math.min(pixEl.length, buf.byteLength - pixEl.dataOffset);
+    const rawCopy = new Uint8Array(buf, pixEl.dataOffset, byteLen).slice();
+
+    let px;
+    if(bitsA<=8){
+      px = rawCopy;
+    } else {
+      const evenLen = rawCopy.byteLength - (rawCopy.byteLength%2);
+      const aligned = rawCopy.buffer.slice(rawCopy.byteOffset, rawCopy.byteOffset+evenLen);
+      px = pixRp===1 ? new Int16Array(aligned) : new Uint16Array(aligned);
+    }
+
+    // Clamp to expectedPixels
+    const len = Math.min(px.length, expectedPixels);
+    for(let i=0;i<len;i++){
+      const v=px[i]*slope+inter; hu[i]=v;
+      if(v<minHU) minHU=v; if(v>maxHU) maxHU=v;
+    }
+
+  } else if(isJPEGBaseline){
+    // ── PATH B: JPEG Baseline — decode via browser canvas ────────────────────
+    const fragBytes = extractEncapsulatedBytes(ds, buf);
+    if(!fragBytes) throw new Error('No se pudieron extraer fragmentos JPEG');
+    const decoded = await decodeJPEGfragment(fragBytes);
+    // JPEG is 8-bit RGB or grayscale — convert to HU-like values
+    const isGray = decoded.data.length/4 === expectedPixels;
+    for(let i=0;i<expectedPixels;i++){
+      // Take red channel (or luma if RGB: 0.299R+0.587G+0.114B)
+      const base = i*4;
+      const luma = photometric==='RGB'
+        ? 0.299*decoded.data[base]+0.587*decoded.data[base+1]+0.114*decoded.data[base+2]
+        : decoded.data[base];
+      const v = luma * slope + inter;
+      hu[i]=v;
+      if(v<minHU) minHU=v; if(v>maxHU) maxHU=v;
+    }
+
+  } else if(isJPEGLossless || isJP2 || isRLE){
+    // ── PATH C: JPEG Lossless / JPEG2000 / RLE — attempt raw byte extraction ─
+    // These require dedicated decoders (not in browser natively).
+    // Best effort: try to find the actual pixel run by scanning for plausible data.
+    console.warn(`Transfer syntax ${ts} requires specialized decoder. Attempting raw extraction.`);
+    const fragBytes = extractEncapsulatedBytes(ds, buf);
+    if(fragBytes && fragBytes.length >= expectedPixels*2){
+      // Treat as 16-bit little-endian
+      const evenLen = fragBytes.byteLength - (fragBytes.byteLength%2);
+      const aligned = fragBytes.buffer.slice(fragBytes.byteOffset, fragBytes.byteOffset+evenLen);
+      const px16 = pixRp===1 ? new Int16Array(aligned) : new Uint16Array(aligned);
+      const len = Math.min(px16.length, expectedPixels);
+      for(let i=0;i<len;i++){
+        const v=px16[i]*slope+inter; hu[i]=v;
+        if(v<minHU) minHU=v; if(v>maxHU) maxHU=v;
+      }
+      toast('Aviso: formato comprimido ('+ts.split('.').pop()+') — visualización aproximada','');
+    } else {
+      throw new Error('Formato comprimido no soportado: '+ts);
+    }
+
+  } else {
+    // ── PATH D: Unknown — try uncompressed as fallback ──────────────────────
+    console.warn('Transfer syntax desconocida:', ts, '— intentando lectura directa');
+    const byteLen2 = Math.min(pixEl.length||0, buf.byteLength - pixEl.dataOffset);
+    if(byteLen2 > 0){
+      const rawCopy2 = new Uint8Array(buf, pixEl.dataOffset, byteLen2).slice();
+      const evenLen2 = rawCopy2.byteLength - (rawCopy2.byteLength%2);
+      const aligned2 = rawCopy2.buffer.slice(rawCopy2.byteOffset, rawCopy2.byteOffset+evenLen2);
+      const px2 = pixRp===1 ? new Int16Array(aligned2) : new Uint16Array(aligned2);
+      const len2 = Math.min(px2.length, expectedPixels);
+      for(let i=0;i<len2;i++){
+        const v=px2[i]*slope+inter; hu[i]=v;
+        if(v<minHU) minHU=v; if(v>maxHU) maxHU=v;
+      }
+    }
   }
 
-  // Sanity check
   if(!isFinite(minHU)) minHU=0;
   if(!isFinite(maxHU)) maxHU=4000;
 
   inst.hu=hu; inst.minHU=minHU; inst.maxHU=maxHU;
-  inst.rows=rows; inst.cols=cols;  // always integers now
+  inst.rows=rows; inst.cols=cols;
+  inst.transferSyntax=ts;
   return inst;
 }
 
@@ -575,13 +691,20 @@ async function renderSlice(idx, silent=false){
   if(!silent) showLD(true,'Decodificando...');
   try{
     const inst=await decode(sr.instances[idx]);
+    // Auto W/L on first decode of this series: use actual data range
+    if(!sr._wlSet){
+      sr._wlSet=true;
+      autoWindowLevel(inst);
+    }
     paintCanvas(inst);
     updateOverlays(inst,idx);
     drawHistogram(inst.hu,inst.minHU,inst.maxHU);
     highlightThumb(idx);
     updateMeasPanel();
   } catch(e){
+    console.error('renderSlice error:',e);
     toast('Error: '+e.message,'err');
+    setStatus('Error de decodificación','err');
   }
   if(!silent) showLD(false);
 }
@@ -623,6 +746,26 @@ function updateOverlays(inst,idx){
   $('oTR').innerHTML=`${m.institution}<br>${m.manufacturer}<br>${m.modality}`;
   $('oBL').innerHTML=`${inst.cols}x${inst.rows}<br>Px:${m.pixSpc}<br>Thk:${m.sliceThk}`;
   $('oBR').innerHTML=`${idx+1}/${total}<br>${m.seriesDesc}<br>W:${S.ww} L:${S.wc}`;
+}
+
+
+// ─── AUTO WINDOW/LEVEL ─────────────────────────────────────────────────────────
+// Compute optimal W/L from actual pixel data histogram (ignores extreme outliers)
+function autoWindowLevel(inst){
+  const hu=inst.hu, n=hu.length;
+  if(!n) return;
+  // Sample up to 50k pixels for speed
+  const step=Math.max(1,Math.floor(n/50000));
+  const vals=[];
+  for(let i=0;i<n;i+=step) if(isFinite(hu[i])) vals.push(hu[i]);
+  vals.sort((a,b)=>a-b);
+  // Use 2nd–98th percentile to avoid background/air dominating
+  const lo=vals[Math.floor(vals.length*.02)]??inst.minHU;
+  const hi=vals[Math.floor(vals.length*.98)]??inst.maxHU;
+  S.ww=Math.max(1,Math.round(hi-lo));
+  S.wc=Math.round(lo+S.ww/2);
+  syncWL();
+  console.log(`[autoWL] W:${S.ww} L:${S.wc} (range ${lo.toFixed(0)}–${hi.toFixed(0)})`);
 }
 
 // ─── W/L ───────────────────────────────────────────────────────────────────────
