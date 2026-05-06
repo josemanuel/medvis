@@ -502,29 +502,66 @@ async function loadSeries(uid){
 }
 
 // ─── PIXEL DECODE ──────────────────────────────────────────────────────────────
+function safeInt(val, fallback){ const n=parseInt((val||'').toString().trim()); return (isFinite(n)&&n>0)?n:fallback; }
+function safeFloat(val, fallback){ const n=parseFloat((val||'').toString().trim()); return isFinite(n)?n:fallback; }
+
 async function decode(inst){
   if(inst.hu) return inst;
   const ds=inst.ds, buf=inst.buf;
-  const rows  = parseInt(tg(ds,'x00280010')||'512');
-  const cols  = parseInt(tg(ds,'x00280011')||'512');
-  const bitsA = parseInt(tg(ds,'x00280100')||'16');
-  const pixRp = parseInt(tg(ds,'x00280103')||'0');
-  const slope = parseFloat(tg(ds,'x00281053')||'1');
-  const inter = parseFloat(tg(ds,'x00281052')||'0');
+
+  // Robustly parse dimensions — DICOM strings may have padding/whitespace
+  const rows  = safeInt(tg(ds,'x00280010'), 512);
+  const cols  = safeInt(tg(ds,'x00280011'), 512);
+  const bitsA = safeInt(tg(ds,'x00280100'), 16);
+  const pixRp = safeInt(tg(ds,'x00280103'), 0);
+  const slope = safeFloat(tg(ds,'x00281053'), 1);
+  const inter = safeFloat(tg(ds,'x00281052'), 0);
+
+  // Validate dimensions before proceeding
+  if(rows<=0||rows>10000||cols<=0||cols>10000)
+    throw new Error(`Dimensiones inválidas: rows=${rows} cols=${cols} en ${inst.file.name}`);
+
   const el2=ds.elements['x7fe00010'];
-  if(!el2) throw new Error('No pixel data in: '+inst.file.name);
-  const raw=new Uint8Array(buf,el2.dataOffset,el2.length);
+  if(!el2) throw new Error('Sin datos de píxel en: '+inst.file.name);
+
+  // Copy raw bytes to avoid alignment issues with typed array views on shared buffers
+  const byteLen = el2.length;
+  const rawSlice = new Uint8Array(buf, el2.dataOffset, byteLen);
+  const rawCopy  = rawSlice.slice(); // force aligned copy
+
   let px;
-  if(bitsA<=8)        px=new Uint8Array(raw.buffer,raw.byteOffset,raw.byteLength);
-  else if(pixRp===1)  px=new Int16Array(raw.buffer,raw.byteOffset,raw.byteLength/2);
-  else                px=new Uint16Array(raw.buffer,raw.byteOffset,raw.byteLength/2);
-  const hu=new Float32Array(px.length);
+  const expectedPixels = rows * cols;
+  if(bitsA<=8){
+    px = rawCopy;
+  } else {
+    // Ensure even byte length for 16-bit
+    const evenLen = rawCopy.byteLength - (rawCopy.byteLength % 2);
+    const aligned = rawCopy.buffer.slice(rawCopy.byteOffset, rawCopy.byteOffset + evenLen);
+    px = pixRp===1 ? new Int16Array(aligned) : new Uint16Array(aligned);
+  }
+
+  // If pixel count doesn't match, try to recover
+  if(px.length < expectedPixels){
+    console.warn(`Pixel count mismatch: got ${px.length}, expected ${expectedPixels} for ${inst.file.name}`);
+    // Pad or truncate
+    const padded = bitsA<=8 ? new Uint8Array(expectedPixels) : (pixRp===1 ? new Int16Array(expectedPixels) : new Uint16Array(expectedPixels));
+    padded.set(px.subarray(0, Math.min(px.length, expectedPixels)));
+    px = padded;
+  }
+
+  const hu=new Float32Array(expectedPixels);
   let minHU=Infinity, maxHU=-Infinity;
-  for(let i=0;i<px.length;i++){
-    const v=px[i]*slope+inter; hu[i]=v;
+  for(let i=0;i<expectedPixels;i++){
+    const v=(px[i]||0)*slope+inter; hu[i]=v;
     if(v<minHU) minHU=v; if(v>maxHU) maxHU=v;
   }
-  inst.hu=hu; inst.minHU=minHU; inst.maxHU=maxHU; inst.rows=rows; inst.cols=cols;
+
+  // Sanity check
+  if(!isFinite(minHU)) minHU=0;
+  if(!isFinite(maxHU)) maxHU=4000;
+
+  inst.hu=hu; inst.minHU=minHU; inst.maxHU=maxHU;
+  inst.rows=rows; inst.cols=cols;  // always integers now
   return inst;
 }
 
@@ -550,23 +587,32 @@ async function renderSlice(idx, silent=false){
 }
 
 function paintCanvas(inst){
-  const wrap=$('canvaswrap');
-  const cw=wrap.clientWidth||512, ch=wrap.clientHeight||512;
-  const canvas=$('dicomCanvas');
-  canvas.width=inst.cols; canvas.height=inst.rows;
-  canvas.style.width=cw+'px'; canvas.style.height=ch+'px';
-  const svg=$('measureSVG');
-  svg.setAttribute('viewBox',`0 0 ${cw} ${ch}`);
-  const ctx=canvas.getContext('2d');
-  const imgD=ctx.createImageData(inst.cols,inst.rows);
-  const wwMin=S.wc-S.ww/2, wwR=S.ww||1;
-  for(let i=0;i<inst.hu.length;i++){
-    let v=Math.round(((inst.hu[i]-wwMin)/wwR)*255);
-    v=Math.max(0,Math.min(255,v));
-    if(S.inverted) v=255-v;
-    imgD.data[i*4]=v; imgD.data[i*4+1]=v; imgD.data[i*4+2]=v; imgD.data[i*4+3]=255;
+  try{
+    const wrap=$('canvaswrap');
+    const cw=Math.max(1,wrap.clientWidth||512), ch=Math.max(1,wrap.clientHeight||512);
+    const canvas=$('dicomCanvas');
+    // Force integer pixel dimensions
+    const iCols=Math.max(1,inst.cols|0), iRows=Math.max(1,inst.rows|0);
+    canvas.width=iCols; canvas.height=iRows;
+    canvas.style.width=cw+'px'; canvas.style.height=ch+'px';
+    const svg=$('measureSVG');
+    svg.setAttribute('viewBox',`0 0 ${cw} ${ch}`);
+    const ctx=canvas.getContext('2d');
+    const imgD=ctx.createImageData(iCols, iRows);
+    const wwMin=S.wc-S.ww/2, wwR=S.ww||1;
+    const total=iCols*iRows;
+    for(let i=0;i<total;i++){
+      let v=Math.round(((inst.hu[i]-wwMin)/wwR)*255);
+      v=Math.max(0,Math.min(255,v));
+      if(S.inverted) v=255-v;
+      imgD.data[i*4]=v; imgD.data[i*4+1]=v; imgD.data[i*4+2]=v; imgD.data[i*4+3]=255;
+    }
+    ctx.putImageData(imgD,0,0);
+  } catch(e){
+    console.error('paintCanvas error:', e);
+    toast('Error al renderizar imagen: '+e.message,'err');
+    setStatus('Render error','err');
   }
-  ctx.putImageData(imgD,0,0);
 }
 
 function updateOverlays(inst,idx){
