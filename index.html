@@ -153,7 +153,7 @@ kbd{font-family:var(--mono);font-size:9px;background:var(--bg3);border:1px solid
 <header class="hdr">
   <div class="logo">MedVis Studio</div>
   <div class="hdiv"></div>
-  <div class="hinfo">DICOM VIEWER <span>v2.0</span></div>
+  <div class="hinfo">DICOM VIEWER <span>v2.1</span></div>
   <div class="hdiv"></div>
   <div class="hinfo" id="patBadge">no study loaded</div>
   <div class="hbtns">
@@ -1155,22 +1155,9 @@ async function initMPR(){
 
 // ── GLSL Shaders ────────────────────────────────────────────────────────────────
 const VERT_SHADER = `
-  varying vec3 vPos;        // vertex position in object space [-0.5, 0.5]^3
-  varying vec3 vCamObj;     // camera position in object space
+  varying vec3 vWorldPos;
   void main() {
-    vPos = position;
-    // Transform camera from world space to object space manually (no inverse())
-    // Object space = model space: invert TRS by transposing rotation part
-    mat4 m = modelMatrix;
-    // Extract inverse translation
-    vec3 t = vec3(m[3]);
-    // For a rotation-only matrix, inverse = transpose of upper-left 3x3
-    vec3 camWorld = cameraPosition - t;
-    vCamObj = vec3(
-      dot(camWorld, vec3(m[0].x, m[1].x, m[2].x)),
-      dot(camWorld, vec3(m[0].y, m[1].y, m[2].y)),
-      dot(camWorld, vec3(m[0].z, m[1].z, m[2].z))
-    );
+    vWorldPos   = (modelMatrix * vec4(position, 1.0)).xyz;
     gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
   }
 `;
@@ -1187,100 +1174,88 @@ const FRAG_SHADER = `
   uniform int   u_mode;
   uniform int   u_colormap;
   uniform vec3  u_volSize;
+  uniform mat4  u_invModel;   // inverse model matrix passed from JS
 
-  varying vec3 vPos;
-  varying vec3 vCamObj;
+  varying vec3 vWorldPos;
 
   vec3 applyColormap(float t) {
     t = clamp(t, 0.0, 1.0);
-    if (u_colormap == 1) {
-      return vec3(clamp(t*3.0,0.0,1.0), clamp(t*3.0-1.0,0.0,1.0), clamp(t*3.0-2.0,0.0,1.0));
-    }
+    if (u_colormap == 1)
+      return vec3(clamp(t*3.0,0.,1.), clamp(t*3.0-1.,0.,1.), clamp(t*3.0-2.,0.,1.));
     if (u_colormap == 2) {
-      vec3 c0=vec3(0.267,0.005,0.329), c1=vec3(0.128,0.566,0.551), c2=vec3(0.993,0.906,0.144);
-      return t<0.5 ? mix(c0,c1,t*2.0) : mix(c1,c2,(t-0.5)*2.0);
+      vec3 c0=vec3(0.267,0.005,0.329),c1=vec3(0.128,0.566,0.551),c2=vec3(0.993,0.906,0.144);
+      return t<0.5?mix(c0,c1,t*2.0):mix(c1,c2,(t-0.5)*2.0);
     }
-    if (u_colormap == 3) { return vec3(1.0-t, t, 1.0); }
+    if (u_colormap == 3) return vec3(1.0-t, t, 1.0);
     return vec3(t);
   }
 
-  // Ray-AABB slab method for unit cube [-0.5, 0.5]^3
-  vec2 hitBox(vec3 orig, vec3 dir) {
-    vec3 inv = 1.0 / dir;
-    vec3 t0  = (-0.5 - orig) * inv;
-    vec3 t1  = ( 0.5 - orig) * inv;
-    vec3 tA  = min(t0, t1);
-    vec3 tB  = max(t0, t1);
+  vec2 hitBox(vec3 o, vec3 d) {
+    vec3 inv=1.0/d, t0=(-0.5-o)*inv, t1=(0.5-o)*inv;
+    vec3 tA=min(t0,t1), tB=max(t0,t1);
     return vec2(max(max(tA.x,tA.y),tA.z), min(min(tB.x,tB.y),tB.z));
   }
 
   void main() {
-    vec3 rayDir = normalize(vPos - vCamObj);
+    // Ray in object (model) space — use inverse model matrix passed as uniform
+    vec3 camObj = (u_invModel * vec4(cameraPosition, 1.0)).xyz;
+    vec3 posObj = (u_invModel * vec4(vWorldPos,      1.0)).xyz;
+    vec3 rayDir = normalize(posObj - camObj);
 
-    // Aspect ratio correction — stretch UVs for non-cubic volumes
-    vec3 aspect = u_volSize / max(u_volSize.x, max(u_volSize.y, u_volSize.z));
-
-    // Hit test in object space
-    vec2 tb = hitBox(vCamObj, rayDir);
+    vec2 tb = hitBox(camObj, rayDir);
     if (tb.x >= tb.y) discard;
     tb.x = max(tb.x, 0.0);
 
-    float stepSize = sqrt(3.0) / 350.0;
-    vec3  pos      = vCamObj + (tb.x + stepSize * 0.5) * rayDir;
+    // Aspect correction: map non-cubic volumes without distortion
+    vec3 asp = u_volSize / max(u_volSize.x, max(u_volSize.y, u_volSize.z));
 
-    vec4  accum  = vec4(0.0);
-    float maxVal = 0.0;
+    float stepSize = sqrt(3.0) / 400.0;
+    vec3  pos      = camObj + (tb.x + stepSize) * rayDir;
+    vec4  accum    = vec4(0.0);
+    float mxVal    = 0.0;
 
-    for (int i = 0; i < 500; i++) {
-      // Map object space [-0.5,0.5] → UV [0,1], corrected for aspect
-      vec3 uv = (pos / aspect) + 0.5;
+    for (int i = 0; i < 512; i++) {
+      if (dot(pos - camObj, rayDir) > tb.y) break;
 
-      if (any(lessThan(uv, vec3(0.0))) || any(greaterThan(uv, vec3(1.0)))) break;
+      vec3 uv = pos / asp + 0.5;
+      if (any(lessThan(uv,vec3(0.0))) || any(greaterThan(uv,vec3(1.0)))) {
+        pos += rayDir * stepSize; continue;
+      }
 
-      // Trilinear sample (LINEAR filter on DataTexture3D = automatic)
       float raw  = texture(u_volume, uv).r;
       float norm = clamp((raw - u_clim.x) / max(u_clim.y - u_clim.x, 0.001), 0.0, 1.0);
 
       if (u_mode == 1) {
-        // MIP
-        if (norm > maxVal) maxVal = norm;
+        if (norm > mxVal) mxVal = norm;
 
       } else if (u_mode == 2) {
-        // ISO surface with Phong shading
         if (norm >= u_threshold) {
-          float d  = 0.005;
-          vec3 n   = normalize(vec3(
-            texture(u_volume,(pos+vec3(d,0,0))/aspect+0.5).r - texture(u_volume,(pos-vec3(d,0,0))/aspect+0.5).r,
-            texture(u_volume,(pos+vec3(0,d,0))/aspect+0.5).r - texture(u_volume,(pos-vec3(0,d,0))/aspect+0.5).r,
-            texture(u_volume,(pos+vec3(0,0,d))/aspect+0.5).r - texture(u_volume,(pos-vec3(0,0,d))/aspect+0.5).r
+          float d = 0.004;
+          vec3 n = normalize(vec3(
+            texture(u_volume, uv+vec3(d,0,0)).r - texture(u_volume, uv-vec3(d,0,0)).r,
+            texture(u_volume, uv+vec3(0,d,0)).r - texture(u_volume, uv-vec3(0,d,0)).r,
+            texture(u_volume, uv+vec3(0,0,d)).r - texture(u_volume, uv-vec3(0,0,d)).r
           ));
-          vec3 L   = normalize(vec3(1.0,1.0,1.0));
-          float df = max(dot(n, L), 0.1);
-          float sp = pow(max(dot(reflect(-L,n),-rayDir),0.0),24.0)*0.35;
+          vec3 L = normalize(vec3(1,1,1));
+          float df = max(dot(n,L),0.1);
+          float sp = pow(max(dot(reflect(-L,n),-rayDir),0.0),32.0)*0.4;
           gl_FragColor = vec4(applyColormap(norm)*df + sp, 1.0);
           return;
         }
 
       } else {
-        // Volume: front-to-back alpha compositing
         if (norm > u_threshold) {
-          float alpha = clamp(norm * norm * stepSize * 200.0 * u_opacity, 0.0, 1.0);
-          vec3  col   = applyColormap(norm);
-          accum.rgb  += (1.0 - accum.a) * alpha * col;
-          accum.a    += (1.0 - accum.a) * alpha;
+          float alpha = clamp(norm*norm * stepSize*220.0 * u_opacity, 0.0, 1.0);
+          accum.rgb += (1.0-accum.a)*alpha*applyColormap(norm);
+          accum.a   += (1.0-accum.a)*alpha;
           if (accum.a > 0.98) break;
         }
       }
-
       pos += rayDir * stepSize;
-      if (dot(pos - vCamObj, rayDir) > tb.y) break;
     }
 
-    if (u_mode == 1) {
-      gl_FragColor = maxVal > 0.005 ? vec4(applyColormap(maxVal), 1.0) : vec4(0.0);
-    } else if (u_mode == 0) {
-      gl_FragColor = accum;
-    }
+    if      (u_mode==1) gl_FragColor = mxVal>0.005 ? vec4(applyColormap(mxVal),1.0) : vec4(0.0);
+    else if (u_mode==0) gl_FragColor = accum;
     if (gl_FragColor.a < 0.004) discard;
   }
 `;
@@ -1414,6 +1389,7 @@ async function init3D(){
     u_mode:      { value: 0 },
     u_colormap:  { value: 0 },
     u_volSize:   { value: new THREE.Vector3(volW, volH, sampledInsts.length) },
+    u_invModel:  { value: new THREE.Matrix4() },
   };
   S.vol3DUniforms = uniforms;
   S.vol3DTexture  = texture;
@@ -1469,9 +1445,16 @@ async function init3D(){
   }).observe(cont);
 
   S._3danim = true;
+  const _invMat = new THREE.Matrix4();
   (function loop(){
     if(!S._3danim) return;
     requestAnimationFrame(loop);
+    // Update inverse model matrix uniform for ray casting
+    if(S.vol3DMesh && S.vol3DUniforms){
+      S.vol3DMesh.updateMatrixWorld();
+      _invMat.copy(S.vol3DMesh.matrixWorld).invert();
+      S.vol3DUniforms.u_invModel.value.copy(_invMat);
+    }
     renderer.render(scene, cam);
   })();
 
