@@ -870,8 +870,8 @@ function autoWindowLevel(inst){
 }
 
 // ─── W/L ───────────────────────────────────────────────────────────────────────
-function onWWchange(v){ S.ww=Math.max(1,v); syncWL(); repaint(); }
-function onWCchange(v){ S.wc=v; syncWL(); repaint(); }
+function onWWchange(v){ S.ww=Math.max(1,v); syncWL(); repaint(); if(S.vol3DUniforms) updateVolUniforms(); }
+function onWCchange(v){ S.wc=v; syncWL(); repaint(); if(S.vol3DUniforms) updateVolUniforms(); }
 function syncWL(){
   for(const id of ['wwR','wwS']){ const el=$(id); if(el) el.value=S.ww; }
   for(const id of ['wcR','wcS']){ const el=$(id); if(el) el.value=S.wc; }
@@ -1147,40 +1147,398 @@ async function initMPR(){
 }
 
 // ─── 3D ─────────────────────────────────────────────────────────────────────────
-async function init3D(){
-  const sr=S.series[S.activeUID];
-  if(!sr||sr.instances.length<2){ toast('Se necesitan >=2 imágenes para 3D','err'); return; }
-  const cont=$('v3d'), W=cont.clientWidth, H=cont.clientHeight;
-  const threeCanvas=$('threeCanvas');
+// ═══════════════════════════════════════════════════════════════════════════════
+// 3D VOLUMETRIC RAY CASTER
+// Uses WebGL2 Data3DTexture + GLSL ray marching with trilinear interpolation
+// ═══════════════════════════════════════════════════════════════════════════════
 
+// ── GLSL Shaders ────────────────────────────────────────────────────────────────
+const VERT_SHADER = `
+  varying vec3 vOrigin;
+  varying vec3 vDirection;
+  void main() {
+    // vOrigin: camera position in object (volume) space [-0.5,0.5]^3
+    vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+    vOrigin    = (inverse(modelMatrix) * vec4(cameraPosition, 1.0)).xyz;
+    vDirection = position - vOrigin;
+    gl_Position = projectionMatrix * mvPos;
+  }
+`;
+
+const FRAG_SHADER = `
+  precision highp float;
+  precision highp sampler3D;
+
+  uniform sampler3D u_volume;   // normalised [0,1] voxel values
+  uniform vec2  u_clim;         // (wMin_norm, wMax_norm) window in [0,1]
+  uniform float u_opacity;      // global opacity scale
+  uniform float u_threshold;    // minimum normalised value to render
+  uniform int   u_mode;         // 0=Volume, 1=MIP, 2=ISO
+  uniform int   u_colormap;     // 0=Gray,1=Hot,2=Viridis,3=Cool
+  uniform vec3  u_volSize;      // (cols, rows, depth) for aspect ratio
+
+  varying vec3 vOrigin;
+  varying vec3 vDirection;
+
+  // ── Transfer functions (colormaps) ──────────────────────────────────────────
+  vec3 applyColormap(float t) {
+    t = clamp(t, 0.0, 1.0);
+    if (u_colormap == 1) { // Hot
+      return vec3(
+        clamp(t * 3.0, 0.0, 1.0),
+        clamp(t * 3.0 - 1.0, 0.0, 1.0),
+        clamp(t * 3.0 - 2.0, 0.0, 1.0)
+      );
+    }
+    if (u_colormap == 2) { // Viridis (approx)
+      vec3 c0 = vec3(0.267, 0.005, 0.329);
+      vec3 c1 = vec3(0.128, 0.566, 0.551);
+      vec3 c2 = vec3(0.993, 0.906, 0.144);
+      if (t < 0.5) return mix(c0, c1, t * 2.0);
+      return mix(c1, c2, (t - 0.5) * 2.0);
+    }
+    if (u_colormap == 3) { // Cool
+      return vec3(1.0 - t, t, 1.0);
+    }
+    return vec3(t); // Gray
+  }
+
+  // ── Ray–AABB intersection for unit cube centered at origin ──────────────────
+  vec2 intersectBox(vec3 orig, vec3 dir) {
+    vec3 box_min = vec3(-0.5);
+    vec3 box_max = vec3(0.5);
+    vec3 inv_dir = 1.0 / dir;
+    vec3 tmin_v  = (box_min - orig) * inv_dir;
+    vec3 tmax_v  = (box_max - orig) * inv_dir;
+    vec3 t1 = min(tmin_v, tmax_v);
+    vec3 t2 = max(tmin_v, tmax_v);
+    float tNear = max(max(t1.x, t1.y), t1.z);
+    float tFar  = min(min(t2.x, t2.y), t2.z);
+    return vec2(tNear, tFar);
+  }
+
+  void main() {
+    vec3 rayDir = normalize(vDirection);
+
+    // Compensate for non-cubic volumes (stretch ray in volume space)
+    float maxDim = max(u_volSize.x, max(u_volSize.y, u_volSize.z));
+    vec3 scale   = u_volSize / maxDim;
+
+    vec2 tb = intersectBox(vOrigin * scale, rayDir * scale);
+    if (tb.x >= tb.y) discard;
+    tb.x = max(tb.x, 0.0);
+
+    // Adaptive step size: ~400 steps across the diagonal
+    float stepSize  = sqrt(3.0) / 400.0;
+    vec3  stepVec   = rayDir * stepSize;
+    vec3  pos       = vOrigin + tb.x * rayDir;
+
+    vec4  accum  = vec4(0.0);  // accumulated RGBA (front-to-back)
+    float maxVal = 0.0;        // for MIP
+
+    int maxSteps = 600;
+    for (int i = 0; i < maxSteps; i++) {
+      // UV in [0,1]^3 from object space [-0.5,0.5]^3
+      vec3 uv = pos / scale + 0.5;
+
+      if (any(lessThan(uv, vec3(0.0))) || any(greaterThan(uv, vec3(1.0)))) {
+        pos += stepVec;
+        if (dot(pos - vOrigin, rayDir) > tb.y) break;
+        continue;
+      }
+
+      // Trilinear interpolation is built into sampler3D with LINEAR filter
+      float raw  = texture(u_volume, uv).r;
+
+      // Apply window/level mapping
+      float norm = (raw - u_clim.x) / max(u_clim.y - u_clim.x, 0.001);
+      norm = clamp(norm, 0.0, 1.0);
+
+      if (u_mode == 1) {
+        // ── MIP: track maximum ───────────────────────────────────────────────
+        if (norm > maxVal) maxVal = norm;
+
+      } else if (u_mode == 2) {
+        // ── ISO surface ──────────────────────────────────────────────────────
+        if (norm >= u_threshold) {
+          // Estimate surface normal via central differences
+          float d = 0.004;
+          float nx = texture(u_volume, uv + vec3(d,0,0)).r - texture(u_volume, uv - vec3(d,0,0)).r;
+          float ny = texture(u_volume, uv + vec3(0,d,0)).r - texture(u_volume, uv - vec3(0,d,0)).r;
+          float nz = texture(u_volume, uv + vec3(0,0,d)).r - texture(u_volume, uv - vec3(0,0,d)).r;
+          vec3 normal = normalize(vec3(nx, ny, nz));
+          vec3 light  = normalize(vec3(1.0, 1.0, 1.0));
+          float diff  = max(dot(normal, light), 0.15);
+          float spec  = pow(max(dot(reflect(-light, normal), -rayDir), 0.0), 32.0) * 0.4;
+          vec3 col    = applyColormap(norm) * diff + vec3(spec);
+          gl_FragColor = vec4(col, 1.0);
+          return;
+        }
+
+      } else {
+        // ── Volume: front-to-back alpha compositing ──────────────────────────
+        if (norm > u_threshold) {
+          // Opacity: sigmoid-like ramp from threshold, scaled by step and global opacity
+          float alpha = norm * norm * stepSize * 180.0 * u_opacity;
+          alpha = clamp(alpha, 0.0, 1.0);
+          vec3 col = applyColormap(norm);
+          accum.rgb += (1.0 - accum.a) * alpha * col;
+          accum.a   += (1.0 - accum.a) * alpha;
+          if (accum.a > 0.97) break; // early termination
+        }
+      }
+
+      pos += stepVec;
+      if (dot(pos - vOrigin, rayDir) > tb.y) break;
+    }
+
+    if (u_mode == 1) {
+      // MIP output
+      vec3 col = applyColormap(maxVal);
+      gl_FragColor = maxVal > 0.01 ? vec4(col, 1.0) : vec4(0.0);
+    } else if (u_mode == 0) {
+      gl_FragColor = accum;
+    }
+    if (gl_FragColor.a < 0.005) discard;
+  }
+`;
+
+async function init3D(){
+  const sr = S.series[S.activeUID];
+  if(!sr || sr.instances.length < 2){ toast('Se necesitan >=2 imágenes para 3D','err'); return; }
+  const cont = $('v3d'), W = cont.clientWidth, H = cont.clientHeight;
+  const threeCanvas = $('threeCanvas');
+
+  // If already built for this series, just resize
+  if(S.renderer3 && S.vol3DUID === S.activeUID){
+    S.renderer3.setSize(W,H);
+    S.cam3.aspect = W/H; S.cam3.updateProjectionMatrix();
+    return;
+  }
+
+  // Clean up previous renderer if switching series
   if(S.renderer3){
-    // already built — just resize and return
-    S.renderer3.setSize(W,H); S.cam3.aspect=W/H; S.cam3.updateProjectionMatrix(); return;
+    S.renderer3.dispose();
+    S.renderer3 = null; S.scene3 = null; S.cam3 = null;
+    S.volMat = null; S._3danim = false;
+  }
+
+  showLD(true,'Verificando WebGL2...'); await yield_();
+
+  // ── WebGL2 check ────────────────────────────────────────────────────────────
+  const testCtx = document.createElement('canvas').getContext('webgl2');
+  if(!testCtx){
+    toast('WebGL2 no disponible — usando modo sprite','warn');
+    showLD(false);
+    await initSpriteVolumeFallback(sr, cont, threeCanvas, W, H);
+    return;
   }
 
   showLD(true,'Cargando volumen 3D...'); showPG(true);
-  const renderer=new THREE.WebGLRenderer({canvas:threeCanvas,antialias:true});
-  renderer.setSize(W,H); renderer.setPixelRatio(Math.min(devicePixelRatio,2)); renderer.setClearColor(0x000000,1);
-  S.renderer3=renderer;
 
-  const scene=new THREE.Scene(); S.scene3=scene;
-  const cam=new THREE.PerspectiveCamera(50,W/H,.1,3000); cam.position.z=350; S.cam3=cam;
-  scene.add(new THREE.AmbientLight(0xffffff,.5));
-  const dl=new THREE.DirectionalLight(0x00d4ff,.7); dl.position.set(1,1,1); scene.add(dl);
+  // ── Three.js renderer (WebGL2) ───────────────────────────────────────────────
+  const renderer = new THREE.WebGLRenderer({canvas:threeCanvas, antialias:false, context:testCtx});
+  renderer.setSize(W,H); renderer.setClearColor(0x000000,1);
+  S.renderer3 = renderer; S.vol3DUID = S.activeUID;
 
-  // Load slices (max 60 for perf)
-  const total=sr.instances.length, maxSl=Math.min(60,total), step2=Math.max(1,Math.floor(total/maxSl));
-  const slices=[];
-  for(let si=0;si<total;si+=step2){
-    try{ slices.push(await decode(sr.instances[si])); } catch{}
-    if(si%5===0){ setPG(Math.round(si/total*85)); $('ldtxt').textContent=`Cargando slice ${slices.length}/${maxSl}...`; await yield_(); }
+  const scene = new THREE.Scene(); S.scene3 = scene;
+  const cam   = new THREE.PerspectiveCamera(40, W/H, 0.01, 100);
+  cam.position.set(0, 0, 1.8); S.cam3 = cam;
+
+  // ── Load and downsample slices into 3D texture ───────────────────────────────
+  const total   = sr.instances.length;
+  // Target volume dimensions (GPU memory friendly: max 256^3)
+  const maxDim  = 256;
+  const srcCols = safeInt(tg(sr.instances[0].ds,'x00280011'),512);
+  const srcRows = safeInt(tg(sr.instances[0].ds,'x00280010'),512);
+
+  // Compute downsampling factors
+  const dsXY   = Math.max(1, Math.ceil(Math.max(srcCols,srcRows) / maxDim));
+  const volW   = Math.floor(srcCols / dsXY);
+  const volH   = Math.floor(srcRows / dsXY);
+
+  const maxSlices = Math.min(maxDim, total);
+  const sliceStep = Math.max(1, Math.floor(total / maxSlices));
+  const volD   = Math.floor(total / sliceStep);
+
+  $('ldtxt').textContent = `Construyendo textura 3D ${volW}×${volH}×${volD}...`;
+  await yield_();
+
+  // Collect global HU range from sampled slices for normalisation
+  let gMin =  Infinity, gMax = -Infinity;
+  const sampledInsts = [];
+  for(let si=0; si<total; si+=sliceStep){
+    try{
+      const inst = await decode(sr.instances[si]);
+      sampledInsts.push(inst);
+      if(inst.minHU < gMin) gMin = inst.minHU;
+      if(inst.maxHU > gMax) gMax = inst.maxHU;
+    } catch{}
+    if(si % 10 === 0){
+      setPG(Math.round(si/total*50));
+      $('ldtxt').textContent = `Decodificando slice ${sampledInsts.length}/${volD}...`;
+      await yield_();
+    }
   }
 
-  S.volSlices=slices;
+  const gRange = Math.max(gMax - gMin, 1);
+  const volData = new Uint8Array(volW * volH * sampledInsts.length);
+
+  // Fill volume — downsample XY via nearest-neighbour, Z already stepped
+  for(let zi=0; zi<sampledInsts.length; zi++){
+    const inst = sampledInsts[zi];
+    const sliceOff = zi * volW * volH;
+    for(let y=0; y<volH; y++){
+      const srcY = Math.min(Math.floor(y * dsXY), inst.rows-1);
+      for(let x=0; x<volW; x++){
+        const srcX = Math.min(Math.floor(x * dsXY), inst.cols-1);
+        const hu   = inst.hu[srcY * inst.cols + srcX] || 0;
+        volData[sliceOff + y*volW + x] = Math.round(((hu-gMin)/gRange)*255);
+      }
+    }
+    if(zi % 5 === 0){
+      setPG(50 + Math.round(zi/sampledInsts.length*45));
+      await yield_();
+    }
+  }
+
+  // Store for uniform updates
+  S.vol3DGmin  = gMin;
+  S.vol3DGrange= gRange;
+  S.vol3DW = volW; S.vol3DH = volH; S.vol3DD = sampledInsts.length;
+
+  // ── Data3DTexture ────────────────────────────────────────────────────────────
+  const texture = new THREE.Data3DTexture(volData, volW, volH, sampledInsts.length);
+  texture.format    = THREE.RedFormat;
+  texture.type      = THREE.UnsignedByteType;
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.wrapS = texture.wrapT = texture.wrapR = THREE.ClampToEdgeWrapping;
+  texture.unpackAlignment = 1;
+  texture.needsUpdate = true;
+
+  // ── ShaderMaterial ───────────────────────────────────────────────────────────
+  const uniforms = {
+    u_volume:    { value: texture },
+    u_clim:      { value: new THREE.Vector2(0.0, 1.0) },
+    u_opacity:   { value: 0.80 },
+    u_threshold: { value: 0.15 },
+    u_mode:      { value: 0 },
+    u_colormap:  { value: 0 },
+    u_volSize:   { value: new THREE.Vector3(volW, volH, sampledInsts.length) },
+  };
+  S.vol3DUniforms = uniforms;
+  S.vol3DTexture  = texture;
+
+  const mat = new THREE.ShaderMaterial({
+    uniforms,
+    vertexShader:   VERT_SHADER,
+    fragmentShader: FRAG_SHADER,
+    side:        THREE.BackSide,
+    transparent: true,
+    depthTest:   false,
+    depthWrite:  false,
+  });
+  S.volMat = mat;
+
+  // Unit cube geometry — shader maps [-0.5,0.5]^3 to the volume
+  const geom = new THREE.BoxGeometry(1, 1, 1);
+  const mesh = new THREE.Mesh(geom, mat);
+  scene.add(mesh);
+  S.vol3DMesh = mesh;
+
+  // Apply current W/L and controls
+  updateVolUniforms();
+
+  setPG(100); setTimeout(()=>showPG(false),400); showLD(false);
+
+  // ── Orbit interaction ────────────────────────────────────────────────────────
+  threeCanvas.addEventListener('mousedown', e=>{
+    S.d3=true; S.d3sx=e.clientX; S.d3sy=e.clientY; e.stopPropagation();
+  });
+  window.addEventListener('mouseup', ()=>S.d3=false);
+  window.addEventListener('mousemove', e=>{
+    if(!S.d3) return;
+    const sens = 0.005;
+    S.rot3Y += (e.clientX - S.d3sx) * sens;
+    S.rot3X += (e.clientY - S.d3sy) * sens;
+    S.d3sx = e.clientX; S.d3sy = e.clientY;
+    S.rot3X = Math.max(-Math.PI/2, Math.min(Math.PI/2, S.rot3X));
+    if(S.vol3DMesh){
+      S.vol3DMesh.rotation.x = S.rot3X;
+      S.vol3DMesh.rotation.y = S.rot3Y;
+    }
+  });
+  threeCanvas.addEventListener('wheel', e=>{
+    e.preventDefault(); e.stopPropagation();
+    S.zoom3 = Math.max(0.3, Math.min(4, S.zoom3 * (e.deltaY>0 ? 1.08 : 0.92)));
+    cam.position.z = 1.8 * S.zoom3;
+  },{passive:false});
+
+  new ResizeObserver(()=>{
+    const W2=cont.clientWidth, H2=cont.clientHeight;
+    cam.aspect=W2/H2; cam.updateProjectionMatrix(); renderer.setSize(W2,H2);
+  }).observe(cont);
+
+  S._3danim = true;
+  (function loop(){
+    if(!S._3danim) return;
+    requestAnimationFrame(loop);
+    renderer.render(scene, cam);
+  })();
+
+  toast(`Volumen 3D raycast listo — ${volW}×${volH}×${sampledInsts.length} vóxeles`, 'cyan');
+}
+
+// ── Update shader uniforms from current UI state ────────────────────────────────
+function updateVolUniforms(){
+  if(!S.vol3DUniforms) return;
+  const u = S.vol3DUniforms;
+
+  // Window/Level → normalised [0,1] range in texture space
+  const gMin = S.vol3DGmin || -1024, gRange = S.vol3DGrange || 4096;
+  const wwMin = S.wc - S.ww/2;
+  const wwMax = S.wc + S.ww/2;
+  u.u_clim.value.set(
+    (wwMin - gMin) / gRange,
+    (wwMax - gMin) / gRange
+  );
+
+  // Threshold (HU → normalised)
+  const threshHU = parseFloat($('thS')?.value ?? -300);
+  u.u_threshold.value = Math.max(0, (threshHU - gMin) / gRange);
+
+  // Opacity
+  u.u_opacity.value = parseFloat($('opS')?.value ?? 80) / 100;
+
+  // Mode
+  u.u_mode.value = {vol:0, mip:1, iso:2}[S.mode3] ?? 0;
+
+  // Colormap
+  u.u_colormap.value = {gray:0, hot:1, viridis:2, cool:3}[S.colormap] ?? 0;
+}
+
+// ── Sprite volume fallback (WebGL1) ─────────────────────────────────────────────
+async function initSpriteVolumeFallback(sr, cont, threeCanvas, W, H){
+  showLD(true,'Cargando modo sprite...'); showPG(true);
+  const renderer = new THREE.WebGLRenderer({canvas:threeCanvas, antialias:true});
+  renderer.setSize(W,H); renderer.setClearColor(0x000000,1);
+  S.renderer3 = renderer; S.vol3DUID = S.activeUID;
+  const scene = new THREE.Scene(); S.scene3 = scene;
+  const cam   = new THREE.PerspectiveCamera(50, W/H, 0.1, 3000);
+  cam.position.z = 350; S.cam3 = cam;
+
+  const total = sr.instances.length;
+  const maxSl = Math.min(60, total), step = Math.max(1,Math.floor(total/maxSl));
+  const slices=[];
+  for(let si=0;si<total;si+=step){
+    try{ slices.push(await decode(sr.instances[si])); } catch{}
+    if(si%5===0){ setPG(Math.round(si/total*85)); await yield_(); }
+  }
+  S.volSlices = slices;
   buildSpriteVolume();
   setPG(100); setTimeout(()=>showPG(false),400); showLD(false);
 
-  // Orbit controls (manual)
   threeCanvas.addEventListener('mousedown',e=>{S.d3=true;S.d3sx=e.clientX;S.d3sy=e.clientY;e.stopPropagation();});
   window.addEventListener('mouseup',()=>S.d3=false);
   window.addEventListener('mousemove',e=>{
@@ -1190,38 +1548,32 @@ async function init3D(){
     S.rot3X=Math.max(-Math.PI/2,Math.min(Math.PI/2,S.rot3X));
     if(S.scene3) S.scene3.rotation.set(S.rot3X,S.rot3Y,0);
   });
-  threeCanvas.addEventListener('wheel',e=>{ e.preventDefault(); e.stopPropagation(); S.zoom3=Math.max(.1,Math.min(5,S.zoom3*(e.deltaY>0?1.08:.92))); cam.position.z=350*S.zoom3; },{passive:false});
-  new ResizeObserver(()=>{ const W2=cont.clientWidth,H2=cont.clientHeight; cam.aspect=W2/H2; cam.updateProjectionMatrix(); renderer.setSize(W2,H2); }).observe(cont);
-
-  let anim=true;
-  (function loop(){ if(!anim) return; requestAnimationFrame(loop); renderer.render(scene,cam); })();
-  toast('Volumen 3D listo','cyan');
+  threeCanvas.addEventListener('wheel',e=>{e.preventDefault();e.stopPropagation();S.zoom3=Math.max(.1,Math.min(5,S.zoom3*(e.deltaY>0?1.08:.92)));cam.position.z=350*S.zoom3;},{passive:false});
+  new ResizeObserver(()=>{const W2=cont.clientWidth,H2=cont.clientHeight;cam.aspect=W2/H2;cam.updateProjectionMatrix();renderer.setSize(W2,H2);}).observe(cont);
+  S._3danim=true;
+  (function loop(){if(!S._3danim)return;requestAnimationFrame(loop);renderer.render(scene,cam);})();
+  toast('Volumen 3D (modo sprite) listo','cyan');
 }
 
 function buildSpriteVolume(){
   if(!S.scene3||!S.volSlices) return;
-  // Remove old slice planes (keep lights: first 2 children)
-  while(S.scene3.children.length>2) S.scene3.remove(S.scene3.children[S.scene3.children.length-1]);
-
+  while(S.scene3.children.length>0) S.scene3.remove(S.scene3.children[0]);
   const slices=S.volSlices, depth=slices.length;
   const imgW=slices[0].cols, imgH=slices[0].rows;
   const spacing=Math.max(imgH,imgW)/depth*.8;
-  const thresh=parseFloat($('thS')?.value||-300);
+  const thresh=parseFloat($('thS')?.value??-300);
   const wwMin=S.wc-S.ww/2, wwR=S.ww||1;
-
   slices.forEach((inst,si)=>{
     const tc=document.createElement('canvas'); tc.width=imgW; tc.height=imgH;
     const ctx=tc.getContext('2d'), imgD=ctx.createImageData(imgW,imgH);
     for(let i=0;i<inst.hu.length;i++){
-      const hu=inst.hu[i];
-      let norm=(hu-wwMin)/wwR; norm=Math.max(0,Math.min(1,norm));
-      const v=Math.round(norm*255);
-      let [r,g,b]=[v,v,v];
-      if(S.colormap==='hot'){ r=Math.min(255,v*3); g=Math.min(255,Math.max(0,(v-85)*3)); b=Math.min(255,Math.max(0,(v-170)*3)); }
-      else if(S.colormap==='viridis'){ const t=norm; r=Math.round((-.0002*t**3+.2784*t**2-.0596*t+.267)*255); g=Math.round((.8739*t**2-.3576*t+.1354)*255); b=Math.round((-.8*t**2+.2*t+.5)*255); }
-      else if(S.colormap==='cool'){ r=Math.round((1-norm)*255); g=Math.round(norm*255); b=255; }
+      const hu=inst.hu[i]; let norm=(hu-wwMin)/wwR; norm=Math.max(0,Math.min(1,norm));
+      const v=Math.round(norm*255); let [r,g,b]=[v,v,v];
+      if(S.colormap==='hot'){r=Math.min(255,v*3);g=Math.min(255,Math.max(0,(v-85)*3));b=Math.min(255,Math.max(0,(v-170)*3));}
+      else if(S.colormap==='viridis'){const t=norm;r=Math.round((-.0002*t**3+.2784*t**2-.0596*t+.267)*255);g=Math.round((.8739*t**2-.3576*t+.1354)*255);b=Math.round((-.8*t**2+.2*t+.5)*255);}
+      else if(S.colormap==='cool'){r=Math.round((1-norm)*255);g=Math.round(norm*255);b=255;}
       const alpha=hu<thresh?0:Math.min(255,Math.round(norm*160));
-      imgD.data[i*4]=r; imgD.data[i*4+1]=g; imgD.data[i*4+2]=b; imgD.data[i*4+3]=alpha;
+      imgD.data[i*4]=r;imgD.data[i*4+1]=g;imgD.data[i*4+2]=b;imgD.data[i*4+3]=alpha;
     }
     ctx.putImageData(imgD,0,0);
     const tex=new THREE.CanvasTexture(tc);
@@ -1235,12 +1587,32 @@ function buildSpriteVolume(){
 function set3DMode(mode){
   S.mode3=mode;
   for(const m of ['vol','mip','iso']) $('b3'+m).classList.toggle('active',m===mode);
+  if(S.vol3DUniforms){ updateVolUniforms(); }
+  else if(S.volSlices){ buildSpriteVolume(); }
   toast('3D: '+mode.toUpperCase(),'cyan');
 }
-function update3DOpacity(v){ $('opVal').textContent=(v/100).toFixed(2); }
-function update3DThreshold(v){ $('thVal').textContent=v; if(S.volSlices) buildSpriteVolume(); }
-function setColormap(n){ S.colormap=n; document.querySelectorAll('.cmbtn').forEach(b=>b.classList.toggle('active',b.dataset.cm===n)); if(S.volSlices) buildSpriteVolume(); toast('Colormap: '+n,'cyan'); }
-function reset3DCam(){ S.rot3X=0; S.rot3Y=0; S.zoom3=1; if(S.cam3) S.cam3.position.set(0,0,350); if(S.scene3) S.scene3.rotation.set(0,0,0); }
+function update3DOpacity(v){
+  $('opVal').textContent=(v/100).toFixed(2);
+  if(S.vol3DUniforms) updateVolUniforms();
+}
+function update3DThreshold(v){
+  $('thVal').textContent=v;
+  if(S.vol3DUniforms) updateVolUniforms();
+  else if(S.volSlices) buildSpriteVolume();
+}
+function setColormap(n){
+  S.colormap=n;
+  document.querySelectorAll('.cmbtn').forEach(b=>b.classList.toggle('active',b.dataset.cm===n));
+  if(S.vol3DUniforms) updateVolUniforms();
+  else if(S.volSlices) buildSpriteVolume();
+  toast('Colormap: '+n,'cyan');
+}
+function reset3DCam(){
+  S.rot3X=0; S.rot3Y=0; S.zoom3=1;
+  if(S.cam3) S.cam3.position.set(0,0, S.vol3DUniforms?1.8:350);
+  if(S.vol3DMesh){ S.vol3DMesh.rotation.set(0,0,0); }
+  else if(S.scene3){ S.scene3.rotation.set(0,0,0); }
+}
 
 // ─── EXPORT ─────────────────────────────────────────────────────────────────────
 function exportPNG(){
