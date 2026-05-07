@@ -1149,7 +1149,7 @@ async function initMPR(){
 // ─── 3D ─────────────────────────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
 // 3D VOLUMETRIC RAY CASTER
-// Uses WebGL2 Data3DTexture + GLSL ray marching with trilinear interpolation
+// Uses WebGL2 DataTexture3D (r128) + GLSL ray marching with trilinear interpolation
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // ── GLSL Shaders ────────────────────────────────────────────────────────────────
@@ -1167,6 +1167,7 @@ const VERT_SHADER = `
 
 const FRAG_SHADER = `
   precision highp float;
+  precision highp int;
   precision highp sampler3D;
 
   uniform sampler3D u_volume;   // normalised [0,1] voxel values
@@ -1337,7 +1338,7 @@ async function init3D(){
   showLD(true,'Cargando volumen 3D...'); showPG(true);
 
   // ── Three.js renderer (WebGL2) ───────────────────────────────────────────────
-  const renderer = new THREE.WebGLRenderer({canvas:threeCanvas, antialias:false, context:testCtx});
+  const renderer = new THREE.WebGLRenderer({canvas:threeCanvas, antialias:false, context:testCtx, powerPreference:'high-performance'});
   renderer.setSize(W,H); renderer.setClearColor(0x000000,1);
   S.renderer3 = renderer; S.vol3DUID = S.activeUID;
 
@@ -1407,8 +1408,8 @@ async function init3D(){
   S.vol3DGrange= gRange;
   S.vol3DW = volW; S.vol3DH = volH; S.vol3DD = sampledInsts.length;
 
-  // ── Data3DTexture ────────────────────────────────────────────────────────────
-  const texture = new THREE.Data3DTexture(volData, volW, volH, sampledInsts.length);
+  // ── DataTexture3D (Three.js r128) ────────────────────────────────────────────────────────────
+  const texture = new THREE.DataTexture3D(volData, volW, volH, sampledInsts.length);
   texture.format    = THREE.RedFormat;
   texture.type      = THREE.UnsignedByteType;
   texture.minFilter = THREE.LinearFilter;
