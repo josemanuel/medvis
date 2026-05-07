@@ -453,7 +453,8 @@ async function processFiles(rawFiles){
   showLD(false); showPG(false);
   const ns=Object.keys(S.series).length;
   if(!ns){ toast('No se encontraron archivos DICOM válidos','err'); setStatus('No DICOM','err'); return; }
-  setStatus(`${parsed} imgs · ${errors} err · ${ns} series`,'ok');
+  const errMsg = errors>0 ? ` · ${errors} omitidos` : '';
+  setStatus(`${parsed} imgs · ${ns} series${errMsg}`,'ok');
   toast(`${parsed} imágenes · ${ns} series`,'cyan');
   renderSeriesList();
   showViewport();
@@ -1154,14 +1155,23 @@ async function initMPR(){
 
 // ── GLSL Shaders ────────────────────────────────────────────────────────────────
 const VERT_SHADER = `
-  varying vec3 vOrigin;
-  varying vec3 vDirection;
+  varying vec3 vPos;        // vertex position in object space [-0.5, 0.5]^3
+  varying vec3 vCamObj;     // camera position in object space
   void main() {
-    // vOrigin: camera position in object (volume) space [-0.5,0.5]^3
-    vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
-    vOrigin    = (inverse(modelMatrix) * vec4(cameraPosition, 1.0)).xyz;
-    vDirection = position - vOrigin;
-    gl_Position = projectionMatrix * mvPos;
+    vPos = position;
+    // Transform camera from world space to object space manually (no inverse())
+    // Object space = model space: invert TRS by transposing rotation part
+    mat4 m = modelMatrix;
+    // Extract inverse translation
+    vec3 t = vec3(m[3]);
+    // For a rotation-only matrix, inverse = transpose of upper-left 3x3
+    vec3 camWorld = cameraPosition - t;
+    vCamObj = vec3(
+      dot(camWorld, vec3(m[0].x, m[1].x, m[2].x)),
+      dot(camWorld, vec3(m[0].y, m[1].y, m[2].y)),
+      dot(camWorld, vec3(m[0].z, m[1].z, m[2].z))
+    );
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
   }
 `;
 
@@ -1170,137 +1180,108 @@ const FRAG_SHADER = `
   precision highp int;
   precision highp sampler3D;
 
-  uniform sampler3D u_volume;   // normalised [0,1] voxel values
-  uniform vec2  u_clim;         // (wMin_norm, wMax_norm) window in [0,1]
-  uniform float u_opacity;      // global opacity scale
-  uniform float u_threshold;    // minimum normalised value to render
-  uniform int   u_mode;         // 0=Volume, 1=MIP, 2=ISO
-  uniform int   u_colormap;     // 0=Gray,1=Hot,2=Viridis,3=Cool
-  uniform vec3  u_volSize;      // (cols, rows, depth) for aspect ratio
+  uniform sampler3D u_volume;
+  uniform vec2  u_clim;
+  uniform float u_opacity;
+  uniform float u_threshold;
+  uniform int   u_mode;
+  uniform int   u_colormap;
+  uniform vec3  u_volSize;
 
-  varying vec3 vOrigin;
-  varying vec3 vDirection;
+  varying vec3 vPos;
+  varying vec3 vCamObj;
 
-  // ── Transfer functions (colormaps) ──────────────────────────────────────────
   vec3 applyColormap(float t) {
     t = clamp(t, 0.0, 1.0);
-    if (u_colormap == 1) { // Hot
-      return vec3(
-        clamp(t * 3.0, 0.0, 1.0),
-        clamp(t * 3.0 - 1.0, 0.0, 1.0),
-        clamp(t * 3.0 - 2.0, 0.0, 1.0)
-      );
+    if (u_colormap == 1) {
+      return vec3(clamp(t*3.0,0.0,1.0), clamp(t*3.0-1.0,0.0,1.0), clamp(t*3.0-2.0,0.0,1.0));
     }
-    if (u_colormap == 2) { // Viridis (approx)
-      vec3 c0 = vec3(0.267, 0.005, 0.329);
-      vec3 c1 = vec3(0.128, 0.566, 0.551);
-      vec3 c2 = vec3(0.993, 0.906, 0.144);
-      if (t < 0.5) return mix(c0, c1, t * 2.0);
-      return mix(c1, c2, (t - 0.5) * 2.0);
+    if (u_colormap == 2) {
+      vec3 c0=vec3(0.267,0.005,0.329), c1=vec3(0.128,0.566,0.551), c2=vec3(0.993,0.906,0.144);
+      return t<0.5 ? mix(c0,c1,t*2.0) : mix(c1,c2,(t-0.5)*2.0);
     }
-    if (u_colormap == 3) { // Cool
-      return vec3(1.0 - t, t, 1.0);
-    }
-    return vec3(t); // Gray
+    if (u_colormap == 3) { return vec3(1.0-t, t, 1.0); }
+    return vec3(t);
   }
 
-  // ── Ray–AABB intersection for unit cube centered at origin ──────────────────
-  vec2 intersectBox(vec3 orig, vec3 dir) {
-    vec3 box_min = vec3(-0.5);
-    vec3 box_max = vec3(0.5);
-    vec3 inv_dir = 1.0 / dir;
-    vec3 tmin_v  = (box_min - orig) * inv_dir;
-    vec3 tmax_v  = (box_max - orig) * inv_dir;
-    vec3 t1 = min(tmin_v, tmax_v);
-    vec3 t2 = max(tmin_v, tmax_v);
-    float tNear = max(max(t1.x, t1.y), t1.z);
-    float tFar  = min(min(t2.x, t2.y), t2.z);
-    return vec2(tNear, tFar);
+  // Ray-AABB slab method for unit cube [-0.5, 0.5]^3
+  vec2 hitBox(vec3 orig, vec3 dir) {
+    vec3 inv = 1.0 / dir;
+    vec3 t0  = (-0.5 - orig) * inv;
+    vec3 t1  = ( 0.5 - orig) * inv;
+    vec3 tA  = min(t0, t1);
+    vec3 tB  = max(t0, t1);
+    return vec2(max(max(tA.x,tA.y),tA.z), min(min(tB.x,tB.y),tB.z));
   }
 
   void main() {
-    vec3 rayDir = normalize(vDirection);
+    vec3 rayDir = normalize(vPos - vCamObj);
 
-    // Compensate for non-cubic volumes (stretch ray in volume space)
-    float maxDim = max(u_volSize.x, max(u_volSize.y, u_volSize.z));
-    vec3 scale   = u_volSize / maxDim;
+    // Aspect ratio correction — stretch UVs for non-cubic volumes
+    vec3 aspect = u_volSize / max(u_volSize.x, max(u_volSize.y, u_volSize.z));
 
-    vec2 tb = intersectBox(vOrigin * scale, rayDir * scale);
+    // Hit test in object space
+    vec2 tb = hitBox(vCamObj, rayDir);
     if (tb.x >= tb.y) discard;
     tb.x = max(tb.x, 0.0);
 
-    // Adaptive step size: ~400 steps across the diagonal
-    float stepSize  = sqrt(3.0) / 400.0;
-    vec3  stepVec   = rayDir * stepSize;
-    vec3  pos       = vOrigin + tb.x * rayDir;
+    float stepSize = sqrt(3.0) / 350.0;
+    vec3  pos      = vCamObj + (tb.x + stepSize * 0.5) * rayDir;
 
-    vec4  accum  = vec4(0.0);  // accumulated RGBA (front-to-back)
-    float maxVal = 0.0;        // for MIP
+    vec4  accum  = vec4(0.0);
+    float maxVal = 0.0;
 
-    int maxSteps = 600;
-    for (int i = 0; i < maxSteps; i++) {
-      // UV in [0,1]^3 from object space [-0.5,0.5]^3
-      vec3 uv = pos / scale + 0.5;
+    for (int i = 0; i < 500; i++) {
+      // Map object space [-0.5,0.5] → UV [0,1], corrected for aspect
+      vec3 uv = (pos / aspect) + 0.5;
 
-      if (any(lessThan(uv, vec3(0.0))) || any(greaterThan(uv, vec3(1.0)))) {
-        pos += stepVec;
-        if (dot(pos - vOrigin, rayDir) > tb.y) break;
-        continue;
-      }
+      if (any(lessThan(uv, vec3(0.0))) || any(greaterThan(uv, vec3(1.0)))) break;
 
-      // Trilinear interpolation is built into sampler3D with LINEAR filter
+      // Trilinear sample (LINEAR filter on DataTexture3D = automatic)
       float raw  = texture(u_volume, uv).r;
-
-      // Apply window/level mapping
-      float norm = (raw - u_clim.x) / max(u_clim.y - u_clim.x, 0.001);
-      norm = clamp(norm, 0.0, 1.0);
+      float norm = clamp((raw - u_clim.x) / max(u_clim.y - u_clim.x, 0.001), 0.0, 1.0);
 
       if (u_mode == 1) {
-        // ── MIP: track maximum ───────────────────────────────────────────────
+        // MIP
         if (norm > maxVal) maxVal = norm;
 
       } else if (u_mode == 2) {
-        // ── ISO surface ──────────────────────────────────────────────────────
+        // ISO surface with Phong shading
         if (norm >= u_threshold) {
-          // Estimate surface normal via central differences
-          float d = 0.004;
-          float nx = texture(u_volume, uv + vec3(d,0,0)).r - texture(u_volume, uv - vec3(d,0,0)).r;
-          float ny = texture(u_volume, uv + vec3(0,d,0)).r - texture(u_volume, uv - vec3(0,d,0)).r;
-          float nz = texture(u_volume, uv + vec3(0,0,d)).r - texture(u_volume, uv - vec3(0,0,d)).r;
-          vec3 normal = normalize(vec3(nx, ny, nz));
-          vec3 light  = normalize(vec3(1.0, 1.0, 1.0));
-          float diff  = max(dot(normal, light), 0.15);
-          float spec  = pow(max(dot(reflect(-light, normal), -rayDir), 0.0), 32.0) * 0.4;
-          vec3 col    = applyColormap(norm) * diff + vec3(spec);
-          gl_FragColor = vec4(col, 1.0);
+          float d  = 0.005;
+          vec3 n   = normalize(vec3(
+            texture(u_volume,(pos+vec3(d,0,0))/aspect+0.5).r - texture(u_volume,(pos-vec3(d,0,0))/aspect+0.5).r,
+            texture(u_volume,(pos+vec3(0,d,0))/aspect+0.5).r - texture(u_volume,(pos-vec3(0,d,0))/aspect+0.5).r,
+            texture(u_volume,(pos+vec3(0,0,d))/aspect+0.5).r - texture(u_volume,(pos-vec3(0,0,d))/aspect+0.5).r
+          ));
+          vec3 L   = normalize(vec3(1.0,1.0,1.0));
+          float df = max(dot(n, L), 0.1);
+          float sp = pow(max(dot(reflect(-L,n),-rayDir),0.0),24.0)*0.35;
+          gl_FragColor = vec4(applyColormap(norm)*df + sp, 1.0);
           return;
         }
 
       } else {
-        // ── Volume: front-to-back alpha compositing ──────────────────────────
+        // Volume: front-to-back alpha compositing
         if (norm > u_threshold) {
-          // Opacity: sigmoid-like ramp from threshold, scaled by step and global opacity
-          float alpha = norm * norm * stepSize * 180.0 * u_opacity;
-          alpha = clamp(alpha, 0.0, 1.0);
-          vec3 col = applyColormap(norm);
-          accum.rgb += (1.0 - accum.a) * alpha * col;
-          accum.a   += (1.0 - accum.a) * alpha;
-          if (accum.a > 0.97) break; // early termination
+          float alpha = clamp(norm * norm * stepSize * 200.0 * u_opacity, 0.0, 1.0);
+          vec3  col   = applyColormap(norm);
+          accum.rgb  += (1.0 - accum.a) * alpha * col;
+          accum.a    += (1.0 - accum.a) * alpha;
+          if (accum.a > 0.98) break;
         }
       }
 
-      pos += stepVec;
-      if (dot(pos - vOrigin, rayDir) > tb.y) break;
+      pos += rayDir * stepSize;
+      if (dot(pos - vCamObj, rayDir) > tb.y) break;
     }
 
     if (u_mode == 1) {
-      // MIP output
-      vec3 col = applyColormap(maxVal);
-      gl_FragColor = maxVal > 0.01 ? vec4(col, 1.0) : vec4(0.0);
+      gl_FragColor = maxVal > 0.005 ? vec4(applyColormap(maxVal), 1.0) : vec4(0.0);
     } else if (u_mode == 0) {
       gl_FragColor = accum;
     }
-    if (gl_FragColor.a < 0.005) discard;
+    if (gl_FragColor.a < 0.004) discard;
   }
 `;
 
