@@ -1335,81 +1335,87 @@ async function init3D(){
     return;
   }
 
-  showLD(true,'Cargando volumen 3D...'); showPG(true);
+  showLD(true,'Cargando slices...'); showPG(true);
+
+  // ── STEP 1: Decode slices — sample evenly across the series ─────────────────
+  const total     = sr.instances.length;
+  const maxSlices = Math.min(128, total);
+  const sliceStep = Math.max(1, Math.floor(total / maxSlices));
+
+  const sampledInsts = [];
+  let gMin = Infinity, gMax = -Infinity;
+  let srcCols = 0, srcRows = 0;
+
+  for(let si = 0; si < total; si += sliceStep){
+    try{
+      const inst = await decode(sr.instances[si]);
+      sampledInsts.push(inst);
+      if(inst.minHU < gMin) gMin = inst.minHU;
+      if(inst.maxHU > gMax) gMax = inst.maxHU;
+      // Pick dimensions from first successfully decoded slice
+      if(srcCols === 0 && inst.cols > 0){ srcCols = inst.cols; srcRows = inst.rows; }
+    } catch(e){
+      console.warn('[3D] slice', si, 'failed:', e.message);
+    }
+    setPG(Math.round((si+1)/total*55));
+    if(si % 5 === 0){
+      $('ldtxt').textContent = `Decodificando ${sampledInsts.length} / ~${maxSlices} slices...`;
+      await yield_();
+    }
+  }
+
+  if(sampledInsts.length < 2){
+    showLD(false); showPG(false);
+    toast('No se pudieron decodificar suficientes slices para 3D','err');
+    setStatus('Error 3D: sin datos','err');
+    return;
+  }
+
+  // ── STEP 2: Compute volume dimensions ────────────────────────────────────────
+  const maxDim = 256;
+  const dsXY   = Math.max(1, Math.ceil(Math.max(srcCols, srcRows) / maxDim));
+  const volW   = Math.max(1, Math.floor(srcCols / dsXY));
+  const volH   = Math.max(1, Math.floor(srcRows / dsXY));
+  const volD   = sampledInsts.length;
+  const gRange = Math.max(gMax - gMin, 1);
+
+  console.log(`[3D] Volume: ${volW}x${volH}x${volD} | HU: ${gMin.toFixed(0)}–${gMax.toFixed(0)} | dsXY:${dsXY}`);
+  $('ldtxt').textContent = `Construyendo textura ${volW}×${volH}×${volD}...`;
+  await yield_();
+
+  // ── STEP 3: Fill Uint8Array — nearest-neighbour XY downsample ────────────────
+  const volData = new Uint8Array(volW * volH * volD);
+  for(let zi = 0; zi < volD; zi++){
+    const inst     = sampledInsts[zi];
+    const sliceOff = zi * volW * volH;
+    for(let y = 0; y < volH; y++){
+      const srcY = Math.min(Math.floor(y * dsXY), inst.rows - 1);
+      for(let x = 0; x < volW; x++){
+        const srcX = Math.min(Math.floor(x * dsXY), inst.cols - 1);
+        const hu   = inst.hu[srcY * inst.cols + srcX] ?? 0;
+        volData[sliceOff + y * volW + x] = Math.round(((hu - gMin) / gRange) * 255);
+      }
+    }
+    if(zi % 8 === 0){ setPG(55 + Math.round(zi/volD*40)); await yield_(); }
+  }
+
+  S.vol3DGmin = gMin; S.vol3DGrange = gRange;
 
   // ── Three.js renderer (WebGL2) ───────────────────────────────────────────────
-  const renderer = new THREE.WebGLRenderer({canvas:threeCanvas, antialias:false, context:testCtx, powerPreference:'high-performance'});
-  renderer.setSize(W,H); renderer.setClearColor(0x000000,1);
+  const renderer = new THREE.WebGLRenderer({
+    canvas: threeCanvas, antialias: false, context: testCtx,
+    powerPreference: 'high-performance'
+  });
+  renderer.setSize(W, H); renderer.setClearColor(0x000000, 1);
   S.renderer3 = renderer; S.vol3DUID = S.activeUID;
 
   const scene = new THREE.Scene(); S.scene3 = scene;
   const cam   = new THREE.PerspectiveCamera(40, W/H, 0.01, 100);
   cam.position.set(0, 0, 1.8); S.cam3 = cam;
 
-  // ── Load and downsample slices into 3D texture ───────────────────────────────
-  const total   = sr.instances.length;
-  // Target volume dimensions (GPU memory friendly: max 256^3)
-  const maxDim  = 256;
-  const srcCols = safeInt(tg(sr.instances[0].ds,'x00280011'),512);
-  const srcRows = safeInt(tg(sr.instances[0].ds,'x00280010'),512);
-
-  // Compute downsampling factors
-  const dsXY   = Math.max(1, Math.ceil(Math.max(srcCols,srcRows) / maxDim));
-  const volW   = Math.floor(srcCols / dsXY);
-  const volH   = Math.floor(srcRows / dsXY);
-
-  const maxSlices = Math.min(maxDim, total);
-  const sliceStep = Math.max(1, Math.floor(total / maxSlices));
-  const volD   = Math.floor(total / sliceStep);
-
-  $('ldtxt').textContent = `Construyendo textura 3D ${volW}×${volH}×${volD}...`;
-  await yield_();
-
-  // Collect global HU range from sampled slices for normalisation
-  let gMin =  Infinity, gMax = -Infinity;
-  const sampledInsts = [];
-  for(let si=0; si<total; si+=sliceStep){
-    try{
-      const inst = await decode(sr.instances[si]);
-      sampledInsts.push(inst);
-      if(inst.minHU < gMin) gMin = inst.minHU;
-      if(inst.maxHU > gMax) gMax = inst.maxHU;
-    } catch{}
-    if(si % 10 === 0){
-      setPG(Math.round(si/total*50));
-      $('ldtxt').textContent = `Decodificando slice ${sampledInsts.length}/${volD}...`;
-      await yield_();
-    }
-  }
-
-  const gRange = Math.max(gMax - gMin, 1);
-  const volData = new Uint8Array(volW * volH * sampledInsts.length);
-
-  // Fill volume — downsample XY via nearest-neighbour, Z already stepped
-  for(let zi=0; zi<sampledInsts.length; zi++){
-    const inst = sampledInsts[zi];
-    const sliceOff = zi * volW * volH;
-    for(let y=0; y<volH; y++){
-      const srcY = Math.min(Math.floor(y * dsXY), inst.rows-1);
-      for(let x=0; x<volW; x++){
-        const srcX = Math.min(Math.floor(x * dsXY), inst.cols-1);
-        const hu   = inst.hu[srcY * inst.cols + srcX] || 0;
-        volData[sliceOff + y*volW + x] = Math.round(((hu-gMin)/gRange)*255);
-      }
-    }
-    if(zi % 5 === 0){
-      setPG(50 + Math.round(zi/sampledInsts.length*45));
-      await yield_();
-    }
-  }
-
-  // Store for uniform updates
-  S.vol3DGmin  = gMin;
-  S.vol3DGrange= gRange;
-  S.vol3DW = volW; S.vol3DH = volH; S.vol3DD = sampledInsts.length;
-
-  // ── DataTexture3D (Three.js r128) ────────────────────────────────────────────────────────────
-  const texture = new THREE.DataTexture3D(volData, volW, volH, sampledInsts.length);
+  // ── STEP 4: Upload to GPU as DataTexture3D ────────────────────────────────────
+  $('ldtxt').textContent = 'Subiendo textura a GPU...'; await yield_();
+  const texture = new THREE.DataTexture3D(volData, volW, volH, volD);
   texture.format    = THREE.RedFormat;
   texture.type      = THREE.UnsignedByteType;
   texture.minFilter = THREE.LinearFilter;
