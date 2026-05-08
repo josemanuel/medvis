@@ -307,8 +307,14 @@ kbd{font-family:var(--mono);font-size:9px;background:var(--bg3);border:1px solid
         </div>
       </div>
       <div class="cgrp">
-        <div class="ptitle">Histogram</div>
+        <div class="ptitle" style="display:flex;align-items:center;justify-content:space-between">
+          <span>Histogram</span>
+          <button class="hbtn" style="font-size:9px;padding:2px 8px" onclick="equalizeHistogram()" title="Ajustar W/L al rango de tejido (P1–P99)">&#9878; Ecualizar</button>
+        </div>
         <canvas id="histCanvas"></canvas>
+        <div style="font-family:var(--mono);font-size:8.5px;color:var(--t2);margin-top:3px;display:flex;justify-content:space-between">
+          <span id="histMinLbl">—</span><span style="color:var(--cyan)">W/L overlay</span><span id="histMaxLbl">—</span>
+        </div>
       </div>
       <div class="cgrp">
         <div class="ptitle">Measurements</div>
@@ -888,8 +894,8 @@ function autoWindowLevel(inst){
 }
 
 // ─── W/L ───────────────────────────────────────────────────────────────────────
-function onWWchange(v){ S.ww=Math.max(1,v); syncWL(); repaint(); if(S.mode3!=='mip'&&(S.vol3DUniforms||S.volPlanes?.length)) rebuildVolPlanes(); refreshMPR(); }
-function onWCchange(v){ S.wc=v; syncWL(); repaint(); if(S.mode3!=='mip'&&(S.vol3DUniforms||S.volPlanes?.length)) rebuildVolPlanes(); refreshMPR(); }
+function onWWchange(v){ S.ww=Math.max(1,v); syncWL(); repaint(); if(S.mode3!=='mip'&&(S.vol3DUniforms||S.volPlanes?.length)) rebuildVolPlanes(); refreshMPR(); _redrawHistWL(); }
+function onWCchange(v){ S.wc=v; syncWL(); repaint(); if(S.mode3!=='mip'&&(S.vol3DUniforms||S.volPlanes?.length)) rebuildVolPlanes(); refreshMPR(); _redrawHistWL(); }
 function syncWL(){
   for(const id of ['wwR','wwS']){ const el=$(id); if(el) el.value=S.ww; }
   for(const id of ['wcR','wcS']){ const el=$(id); if(el) el.value=S.wc; }
@@ -1082,16 +1088,80 @@ function goSlice(idx){
 }
 
 // ─── HISTOGRAM ──────────────────────────────────────────────────────────────────
-function drawHistogram(hu,minHU,maxHU){
-  const c=$('histCanvas'); c.width=c.offsetWidth||240; c.height=56;
+function drawHistogram(hu, minHU, maxHU){
+  const c=$('histCanvas'); c.width=c.offsetWidth||240; c.height=72;
   const ctx=c.getContext('2d'); ctx.clearRect(0,0,c.width,c.height);
-  const bins=128, hist=new Array(bins).fill(0), rng=maxHU-minHU||1;
-  for(let i=0;i<hu.length;i++){ const b=Math.floor((hu[i]-minHU)/rng*(bins-1)); if(b>=0&&b<bins) hist[b]++; }
-  const maxH=Math.max(...hist)||1, w=c.width/bins;
+  const bins=256, hist=new Array(bins).fill(0), rng=maxHU-minHU||1;
+
+  // Sample up to 200k pixels for speed
+  const step=Math.max(1,Math.floor(hu.length/200000));
+  for(let i=0;i<hu.length;i+=step){
+    const b=Math.floor((hu[i]-minHU)/rng*(bins-1));
+    if(b>=0&&b<bins) hist[b]++;
+  }
+
+  // Log scale: log(1+count) so sparse bins are still visible
+  const logHist=hist.map(v=>Math.log1p(v));
+  // Trim top 0.5% so background peak doesn't crush the rest
+  const sorted=[...logHist].sort((a,b)=>a-b);
+  const maxH=sorted[Math.floor(sorted.length*0.995)]||1;
+
+  const bw=c.width/bins;
   const g=ctx.createLinearGradient(0,0,c.width,0);
   g.addColorStop(0,'#001a33'); g.addColorStop(.5,'#005577'); g.addColorStop(1,'#00d4ff');
   ctx.fillStyle=g;
-  for(let i=0;i<bins;i++){ const h=(hist[i]/maxH)*c.height; ctx.fillRect(i*w,c.height-h,w-.5,h); }
+  for(let i=0;i<bins;i++){
+    const h=Math.min(1,logHist[i]/maxH)*(c.height-4);
+    ctx.fillRect(i*bw, c.height-h, bw-0.3, h);
+  }
+
+  // W/L range overlay — show current window as cyan tinted region
+  const wMin=S.wc-S.ww/2, wMax=S.wc+S.ww/2;
+  const xMin=Math.max(0,((wMin-minHU)/rng)*c.width);
+  const xMax=Math.min(c.width,((wMax-minHU)/rng)*c.width);
+  ctx.fillStyle='rgba(0,212,255,0.10)';
+  ctx.fillRect(xMin, 0, xMax-xMin, c.height);
+  // W/L boundary lines
+  ctx.strokeStyle='rgba(0,212,255,0.55)'; ctx.lineWidth=1; ctx.setLineDash([3,3]);
+  ctx.beginPath(); ctx.moveTo(xMin,0); ctx.lineTo(xMin,c.height); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(xMax,0); ctx.lineTo(xMax,c.height); ctx.stroke();
+  // Center marker
+  const xC=((S.wc-minHU)/rng)*c.width;
+  ctx.strokeStyle='rgba(255,0,119,0.7)'; ctx.setLineDash([]);
+  ctx.beginPath(); ctx.moveTo(xC,c.height*0.4); ctx.lineTo(xC,c.height); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Update min/max labels
+  const lblMin=$('histMinLbl'), lblMax=$('histMaxLbl');
+  if(lblMin) lblMin.textContent=Math.round(minHU);
+  if(lblMax) lblMax.textContent=Math.round(maxHU);
+  // Store for equalize
+  S._lastHistData={hu, minHU, maxHU};
+}
+
+// Redraw histogram after W/L change (cheap — reuses cached data)
+function _redrawHistWL(){
+  if(S._lastHistData){ const {hu,minHU,maxHU}=S._lastHistData; drawHistogram(hu,minHU,maxHU); }
+}
+
+// Histogram equalization: remap W/L to include 2nd–98th percentile of tissue
+// (excludes air/background on the low end and saturated bright spots on high)
+function equalizeHistogram(){
+  const sr=S.series[S.activeUID]; if(!sr) return;
+  const inst=sr.instances[S.slice]; if(!inst?.hu) return;
+  const hu=inst.hu, n=hu.length;
+  const step=Math.max(1,Math.floor(n/80000));
+  const vals=[];
+  for(let i=0;i<n;i+=step) if(isFinite(hu[i])) vals.push(hu[i]);
+  vals.sort((a,b)=>a-b);
+  // 1st–99th percentile (tighter than autoWL's 2–98 for more contrast)
+  const lo=vals[Math.floor(vals.length*0.01)]??inst.minHU;
+  const hi=vals[Math.floor(vals.length*0.99)]??inst.maxHU;
+  S.ww=Math.max(1,Math.round(hi-lo));
+  S.wc=Math.round(lo+S.ww/2);
+  syncWL(); repaint();
+  drawHistogram(hu, inst.minHU, inst.maxHU);
+  toast('Histograma ecualizado','cyan');
 }
 
 // ─── THUMBNAILS ─────────────────────────────────────────────────────────────────
@@ -1207,69 +1277,97 @@ function renderMPR(){
   if(S.mprCutX===undefined){ S.mprCutX=Math.floor(imgW/2); S.mprCutY=Math.floor(imgH/2); }
   const cx=S.mprCutX, cy=S.mprCutY;
 
+  // Physical spacing for aspect ratios
+  const sr2=S.series[S.activeUID];
+  const pixSpcRaw2=sr2?.metadata?.pixSpc||'1';
+  const pxSp=parseFloat(pixSpcRaw2.split('\\')[0])||1;
+  const slThk=parseFloat(sr2?.metadata?.sliceThk||'1')||1;
+  // Axial AR = (cols*pxSp) / (rows*pxSp) = cols/rows (square pixels in-plane)
+  // Coronal AR = (cols*pxSp) / (D*slThk)   [X=cols, Y=depth]
+  // Sagittal AR = (D*slThk) / (rows*pxSp)  [X=depth, Y=rows]  → actually (D*slThk)/(rows*pxSp)
+  const arAxial   = (imgW*pxSp)/(imgH*pxSp);           // cols/rows
+  const arCoronal = (imgW*pxSp)/(D*slThk);             // X=cols, Y=depth
+  const arSagittal= (D*slThk) /(imgH*pxSp);            // X=depth, Y=rows
+
   // ── AXIAL: current slice ──────────────────────────────────────────────────
   const axIdx=Math.min(S.slice, D-1);
   const axInst=slices[axIdx];
   _paintMPRPane('mAxial', (outX,outY,cW,cH)=>{
     const px=Math.floor(outX/cW*imgW), py=Math.floor(outY/cH*imgH);
     return axInst.hu[py*imgW+px];
-  });
+  }, arAxial);
   _drawMPRCrosshair('mAxial', cx/imgW, cy/imgH);
 
-  // ── CORONAL: XZ plane at row=cy
-  // output X → voxel col (0..imgW-1), output Y → slice index (0..D-1)
+  // ── CORONAL: XZ plane at row=cy (output X→col, output Y→slice)
   _paintMPRPane('mCoronal', (outX,outY,cW,cH)=>{
     const col=Math.floor(outX/cW*imgW);
     const zi =Math.floor(outY/cH*D);
     const sl=slices[Math.min(zi,D-1)];
     return sl.hu[Math.min(cy,imgH-1)*imgW+Math.min(col,imgW-1)];
-  });
-  // crosshair: vertical line at cx, horizontal line at current slice
+  }, arCoronal);
   _drawMPRCrosshair('mCoronal', cx/imgW, axIdx/D);
 
-  // ── SAGITTAL: YZ plane at col=cx
-  // output X → slice index (0..D-1), output Y → voxel row (0..imgH-1)
+  // ── SAGITTAL: YZ plane at col=cx (output X→slice, output Y→row)
   _paintMPRPane('mSagittal', (outX,outY,cW,cH)=>{
     const zi =Math.floor(outX/cW*D);
     const row=Math.floor(outY/cH*imgH);
     const sl=slices[Math.min(zi,D-1)];
     return sl.hu[Math.min(row,imgH-1)*imgW+Math.min(cx,imgW-1)];
-  });
-  // crosshair: vertical line at current slice, horizontal at cy
+  }, arSagittal);
   _drawMPRCrosshair('mSagittal', axIdx/D, cy/imgH);
 
-  // Attach click handlers to update crosshair position (once)
+  // Attach click handlers (once per series load)
   _attachMPRClicks();
 }
 
 // Paint a single MPR canvas given a sampler(outX, outY, canvasW, canvasH)→HU
-function _paintMPRPane(id, sampler){
+// _paintMPRPane — renders MPR pane preserving physical aspect ratio.
+// physAR = physical width / physical height of the source plane.
+// If physAR is not provided, fills the whole pane (axial uses canvas AR).
+function _paintMPRPane(id, sampler, physAR){
   const c=$(id); if(!c) return;
   const pane=c.parentElement;
-  c.width=pane.clientWidth||256; c.height=pane.clientHeight||256;
+  const panW=pane.clientWidth||256, panH=pane.clientHeight||256;
+  // Canvas pixel dimensions = pane size (CSS handles display scaling)
+  c.width=panW; c.height=panH;
   const ctx=c.getContext('2d');
-  const imgD=ctx.createImageData(c.width, c.height);
+  ctx.fillStyle='#000'; ctx.fillRect(0,0,panW,panH);
+
+  // Compute letterbox rect that preserves physAR inside the pane
+  let rX=0, rY=0, rW=panW, rH=panH;
+  if(physAR && isFinite(physAR) && physAR>0){
+    const paneAR=panW/panH;
+    if(physAR>paneAR){ rH=Math.round(panW/physAR); rY=Math.round((panH-rH)/2); }
+    else              { rW=Math.round(panH*physAR); rX=Math.round((panW-rW)/2); }
+  }
+
+  const imgD=ctx.createImageData(rW, rH);
   const wwMin=S.wc-S.ww/2, wwR=S.ww||1;
-  for(let y=0;y<c.height;y++){
-    for(let x=0;x<c.width;x++){
-      let hu=sampler(x,y,c.width,c.height);
+  for(let y=0;y<rH;y++){
+    for(let x=0;x<rW;x++){
+      let hu=sampler(x,y,rW,rH);
       let v=Math.max(0,Math.min(255,Math.round(((hu-wwMin)/wwR)*255)));
       if(S.inverted) v=255-v;
-      const i=(y*c.width+x)*4;
+      const i=(y*rW+x)*4;
       imgD.data[i]=v; imgD.data[i+1]=v; imgD.data[i+2]=v; imgD.data[i+3]=255;
     }
   }
-  ctx.putImageData(imgD,0,0);
+  ctx.putImageData(imgD,rX,rY);
+  // Store letterbox rect for correct crosshair and click mapping
+  c._mprRect={x:rX,y:rY,w:rW,h:rH};
 }
 
 // Draw crosshair lines at normalised positions (0..1)
 function _drawMPRCrosshair(id, nx, ny){
   const c=$(id); if(!c) return;
   const ctx=c.getContext('2d');
+  const r=c._mprRect||{x:0,y:0,w:c.width,h:c.height};
+  // Crosshair position within the letterbox rect
+  const lx=r.x+nx*r.w, ly=r.y+ny*r.h;
   ctx.save();
   ctx.strokeStyle='rgba(0,212,255,0.5)'; ctx.lineWidth=1; ctx.setLineDash([4,4]);
-  ctx.beginPath(); ctx.moveTo(nx*c.width,0); ctx.lineTo(nx*c.width,c.height); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(0,ny*c.height); ctx.lineTo(c.width,ny*c.height); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(lx,r.y); ctx.lineTo(lx,r.y+r.h); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(r.x,ly); ctx.lineTo(r.x+r.w,ly); ctx.stroke();
   ctx.restore();
 }
 
@@ -1280,24 +1378,32 @@ function _attachMPRClicks(){
   const slices=S.mprVol;
   const imgW=slices[0].cols, imgH=slices[0].rows, D=slices.length;
 
+  function _relPx(canvas, clientX, clientY){
+    // Convert client coords to canvas-local, then to image coords via letterbox rect
+    const br=canvas.getBoundingClientRect();
+    const scaleX=canvas.width/br.width, scaleY=canvas.height/br.height;
+    const canX=(clientX-br.left)*scaleX, canY=(clientY-br.top)*scaleY;
+    const rect=canvas._mprRect||{x:0,y:0,w:canvas.width,h:canvas.height};
+    return {
+      nx: Math.max(0,Math.min(1,(canX-rect.x)/rect.w)),
+      ny: Math.max(0,Math.min(1,(canY-rect.y)/rect.h)),
+    };
+  }
   $('mAxial').addEventListener('click',e=>{
-    const r=e.target.getBoundingClientRect();
-    S.mprCutX=Math.floor((e.clientX-r.left)/r.width*imgW);
-    S.mprCutY=Math.floor((e.clientY-r.top)/r.height*imgH);
+    const {nx,ny}=_relPx($('mAxial'),e.clientX,e.clientY);
+    S.mprCutX=Math.floor(nx*imgW); S.mprCutY=Math.floor(ny*imgH);
     renderMPR();
   });
   $('mCoronal').addEventListener('click',e=>{
-    const r=e.target.getBoundingClientRect();
-    S.mprCutX=Math.floor((e.clientX-r.left)/r.width*imgW);
-    const zi=Math.floor((e.clientY-r.top)/r.height*D);
-    goSlice(zi);
+    const {nx,ny}=_relPx($('mCoronal'),e.clientX,e.clientY);
+    S.mprCutX=Math.floor(nx*imgW);
+    goSlice(Math.floor(ny*D));
     renderMPR();
   });
   $('mSagittal').addEventListener('click',e=>{
-    const r=e.target.getBoundingClientRect();
-    S.mprCutY=Math.floor((e.clientY-r.top)/r.height*imgH);
-    const zi=Math.floor((e.clientX-r.left)/r.width*D);
-    goSlice(zi);
+    const {nx,ny}=_relPx($('mSagittal'),e.clientX,e.clientY);
+    S.mprCutY=Math.floor(ny*imgH);
+    goSlice(Math.floor(nx*D));
     renderMPR();
   });
 }
@@ -1306,6 +1412,13 @@ function _attachMPRClicks(){
 function refreshMPR(){
   if(S.mprVol && S.mprUID===S.activeUID) renderMPR();
 }
+
+// ResizeObserver for MPR grid — re-render on container resize
+(function(){
+  const mprEl=$('vmpr');
+  if(!mprEl) return;
+  new ResizeObserver(()=>{ if(S.mprVol && S.mprUID===S.activeUID && mprEl.style.display!=='none') renderMPR(); }).observe(mprEl);
+})();
 
 // ─── 3D ─────────────────────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════
