@@ -38,7 +38,7 @@ body{background:var(--bg0);color:var(--t0);font-family:var(--sans);height:100vh;
 .ptitle::before{content:'';width:2px;height:9px;background:var(--cyan);border-radius:1px}
 .dropzone{border:1px dashed var(--b1);border-radius:4px;padding:18px 10px;text-align:center;cursor:pointer;transition:all .2s;background:var(--bg3);position:relative}
 .dropzone:hover,.dropzone.over{border-color:var(--cyan);background:rgba(0,212,255,.04)}
-.dropzone input{position:absolute;inset:0;opacity:0;cursor:pointer}
+.dropzone input{position:absolute;inset:0;opacity:0;cursor:pointer;pointer-events:none}
 .dropzone .dico{font-size:22px;display:block;margin-bottom:6px}
 .dropzone p{font-family:var(--mono);font-size:11px;color:var(--t1);line-height:1.7}
 .dropzone p span{color:var(--cyan);display:block}
@@ -87,6 +87,16 @@ input[type=range].rng.amb::-webkit-slider-thumb{background:var(--amb);box-shadow
 .v3dbtn{font-family:var(--mono);font-size:10px;padding:3px 9px;border:1px solid var(--b1);background:transparent;color:var(--t0);border-radius:2px;cursor:pointer;transition:all .15s}
 .v3dbtn:hover,.v3dbtn.active{border-color:var(--cyan);color:var(--cyan);background:rgba(0,212,255,.08)}
 .mpr-grid{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:2px;background:var(--b0);position:absolute;inset:0}
+.comp-grid{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:2px;background:var(--b0);position:absolute;inset:0}
+.cpane{background:#000;position:relative;overflow:hidden;display:flex;flex-direction:column}
+.cpane canvas{flex:1;width:100%;display:block;image-rendering:pixelated;cursor:crosshair}
+.cpane-bar{height:26px;background:var(--bg2);border-top:1px solid var(--b0);display:flex;align-items:center;padding:0 6px;gap:6px;flex-shrink:0}
+.cpane-bar select{background:var(--bg3);border:1px solid var(--b1);color:var(--t0);font-family:var(--mono);font-size:9px;padding:2px 4px;border-radius:2px;flex:1;cursor:pointer}
+.cpane-bar input[type=range]{flex:1;height:2px}
+.cpane-label{position:absolute;top:5px;left:7px;font-family:var(--mono);font-size:10px;font-weight:600;color:var(--cyan);pointer-events:none;z-index:5;text-shadow:0 1px 3px rgba(0,0,0,.9)}
+.cpane-info{position:absolute;top:5px;right:7px;font-family:var(--mono);font-size:9px;color:rgba(0,255,200,.75);pointer-events:none;z-index:5;text-align:right;line-height:1.5;text-shadow:0 1px 3px rgba(0,0,0,.9)}
+.cpane-sync{font-family:var(--mono);font-size:9px;color:var(--t2);cursor:pointer;white-space:nowrap;padding:0 4px}
+.cpane-sync.on{color:var(--cyan)}
 .mpane{background:#000;position:relative;overflow:hidden}
 .mplabel{position:absolute;top:5px;left:7px;font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;z-index:5;pointer-events:none}
 .mpane canvas{width:100%;height:100%;display:block;image-rendering:pixelated}
@@ -169,10 +179,15 @@ kbd{font-family:var(--mono);font-size:9px;background:var(--bg3);border:1px solid
   <aside class="lpanel">
     <div class="psec">
       <div class="ptitle">Load DICOM</div>
-      <div class="dropzone" id="dz" ondrop="onDrop(event)" ondragover="onDragOver(event)" ondragleave="onDragLeave(event)">
-        <input type="file" id="fInput" webkitdirectory directory multiple onchange="onFileInput(event)">
+      <div class="dropzone" id="dz"
+           onclick="$('fInput').click()"
+           ondrop="onDrop(event)"
+           ondragover="onDragOver(event)"
+           ondragleave="onDragLeave(event)">
+        <input type="file" id="fInput" webkitdirectory directory multiple
+          onchange="onFileInput(event)">
         <span class="dico">&#128194;</span>
-        <p><span>Click o arrastrar carpeta</span>Archivos DICOM / DICOMDIR</p>
+        <p><span>Click para abrir carpeta DICOM</span>Drag &amp; drop disponible desde servidor local</p>
       </div>
     </div>
     <div class="psec" id="studyPanel" style="display:none">
@@ -205,6 +220,7 @@ kbd{font-family:var(--mono);font-size:9px;background:var(--bg3);border:1px solid
       <button class="vtab active" onclick="switchView('2d')" id="t2d">2D AXIAL</button>
       <button class="vtab" onclick="switchView('mpr')" id="tmpr">MPR</button>
       <button class="vtab" onclick="switchView('3d')" id="t3d">3D VOLUME</button>
+      <button class="vtab" onclick="switchView('comp')" id="tcomp">COMPARADOR</button>
     </div>
     <div class="vcontent" id="vcontent" style="display:none">
       <!-- 2D -->
@@ -253,6 +269,63 @@ kbd{font-family:var(--mono);font-size:9px;background:var(--bg3);border:1px solid
           </div>
         </div>
       </div>
+      <!-- COMPARADOR 2x2 -->
+      <div id="vcomp" style="position:absolute;inset:0;display:none;flex-direction:column">
+        <div style="height:28px;background:var(--bg1);border-bottom:1px solid var(--b0);display:flex;align-items:center;padding:0 10px;gap:10px;flex-shrink:0">
+          <span style="font-family:var(--mono);font-size:10px;color:var(--t2)">COMPARADOR</span>
+          <label style="font-family:var(--mono);font-size:9px;color:var(--t2);display:flex;align-items:center;gap:4px;cursor:pointer">
+            <input type="checkbox" id="compSyncWL" onchange="compToggleSync()" style="cursor:pointer">
+            Sincronizar W/L
+          </label>
+          <label style="font-family:var(--mono);font-size:9px;color:var(--t2);display:flex;align-items:center;gap:4px;cursor:pointer">
+            <input type="checkbox" id="compSyncSlice" onchange="compToggleSync()" style="cursor:pointer">
+            Sincronizar slice
+          </label>
+        </div>
+        <div class="comp-grid" id="compGrid">
+          <div class="cpane" id="cpane0">
+            <div class="cpane-label" id="clabel0">A</div>
+            <div class="cpane-info" id="cinfo0"></div>
+            <canvas id="ccanvas0"></canvas>
+            <div class="cpane-bar">
+              <select id="csel0" onchange="compSetSeries(0,this.value)"><option value="">— serie —</option></select>
+              <input type="range" class="rng" id="cslice0" min="0" value="0" oninput="compGoSlice(0,+this.value)" style="width:70px">
+              <span style="font-family:var(--mono);font-size:9px;color:var(--cyan);min-width:40px" id="cscount0">0/0</span>
+            </div>
+          </div>
+          <div class="cpane" id="cpane1">
+            <div class="cpane-label" id="clabel1" style="color:var(--mag)">B</div>
+            <div class="cpane-info" id="cinfo1"></div>
+            <canvas id="ccanvas1"></canvas>
+            <div class="cpane-bar">
+              <select id="csel1" onchange="compSetSeries(1,this.value)"><option value="">— serie —</option></select>
+              <input type="range" class="rng" id="cslice1" min="0" value="0" oninput="compGoSlice(1,+this.value)" style="width:70px">
+              <span style="font-family:var(--mono);font-size:9px;color:var(--cyan);min-width:40px" id="cscount1">0/0</span>
+            </div>
+          </div>
+          <div class="cpane" id="cpane2">
+            <div class="cpane-label" id="clabel2" style="color:var(--amb)">C</div>
+            <div class="cpane-info" id="cinfo2"></div>
+            <canvas id="ccanvas2"></canvas>
+            <div class="cpane-bar">
+              <select id="csel2" onchange="compSetSeries(2,this.value)"><option value="">— serie —</option></select>
+              <input type="range" class="rng" id="cslice2" min="0" value="0" oninput="compGoSlice(2,+this.value)" style="width:70px">
+              <span style="font-family:var(--mono);font-size:9px;color:var(--cyan);min-width:40px" id="cscount2">0/0</span>
+            </div>
+          </div>
+          <div class="cpane" id="cpane3">
+            <div class="cpane-label" id="clabel3" style="color:var(--grn)">D</div>
+            <div class="cpane-info" id="cinfo3"></div>
+            <canvas id="ccanvas3"></canvas>
+            <div class="cpane-bar">
+              <select id="csel3" onchange="compSetSeries(3,this.value)"><option value="">— serie —</option></select>
+              <input type="range" class="rng" id="cslice3" min="0" value="0" oninput="compGoSlice(3,+this.value)" style="width:70px">
+              <span style="font-family:var(--mono);font-size:9px;color:var(--cyan);min-width:40px" id="cscount3">0/0</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- loading -->
       <div class="ldover" id="ldover" style="display:none">
         <div class="ldring"></div>
@@ -307,7 +380,32 @@ kbd{font-family:var(--mono);font-size:9px;background:var(--bg3);border:1px solid
           <div class="cmbtn" data-cm="viridis" style="background:linear-gradient(90deg,#440154,#31688e,#35b779,#fde725)" onclick="setColormap('viridis')"><span class="cmlbl">Viridis</span></div>
           <div class="cmbtn" data-cm="cool" style="background:linear-gradient(90deg,#0ff,#f0f)" onclick="setColormap('cool')"><span class="cmlbl">Cool</span></div>
         </div>
-        <div class="ptitle" style="margin-top:10px">Exportar malla 3D</div>
+        <div class="ptitle" style="margin-top:10px">Recorte ROI (Crop)</div>
+        <p style="font-family:var(--mono);font-size:9px;color:var(--t2);line-height:1.6;margin-bottom:6px">
+          Define la región de interés antes de calcular la malla o exportar el volumen.
+          Elimina los bordes del FOV que generan artefactos.
+        </p>
+        <div style="display:grid;grid-template-columns:28px 1fr 28px;gap:3px;align-items:center;font-family:var(--mono);font-size:9px;color:var(--t2);margin-bottom:2px">
+          <span>X</span><input type="range" class="rng" id="cropX0" min="0" max="100" value="0"  oninput="onCrop()" style="margin:0"><span id="cropX0V" style="text-align:right">0%</span>
+        </div>
+        <div style="display:grid;grid-template-columns:28px 1fr 28px;gap:3px;align-items:center;font-family:var(--mono);font-size:9px;color:var(--t2);margin-bottom:4px">
+          <span></span><input type="range" class="rng" id="cropX1" min="0" max="100" value="100" oninput="onCrop()" style="margin:0"><span id="cropX1V" style="text-align:right">100%</span>
+        </div>
+        <div style="display:grid;grid-template-columns:28px 1fr 28px;gap:3px;align-items:center;font-family:var(--mono);font-size:9px;color:var(--t2);margin-bottom:2px">
+          <span>Y</span><input type="range" class="rng" id="cropY0" min="0" max="100" value="0"  oninput="onCrop()" style="margin:0"><span id="cropY0V" style="text-align:right">0%</span>
+        </div>
+        <div style="display:grid;grid-template-columns:28px 1fr 28px;gap:3px;align-items:center;font-family:var(--mono);font-size:9px;color:var(--t2);margin-bottom:4px">
+          <span></span><input type="range" class="rng" id="cropY1" min="0" max="100" value="100" oninput="onCrop()" style="margin:0"><span id="cropY1V" style="text-align:right">100%</span>
+        </div>
+        <div style="display:grid;grid-template-columns:28px 1fr 28px;gap:3px;align-items:center;font-family:var(--mono);font-size:9px;color:var(--t2);margin-bottom:2px">
+          <span>Z</span><input type="range" class="rng" id="cropZ0" min="0" max="100" value="0"  oninput="onCrop()" style="margin:0"><span id="cropZ0V" style="text-align:right">0%</span>
+        </div>
+        <div style="display:grid;grid-template-columns:28px 1fr 28px;gap:3px;align-items:center;font-family:var(--mono);font-size:9px;color:var(--t2);margin-bottom:6px">
+          <span></span><input type="range" class="rng" id="cropZ1" min="0" max="100" value="100" oninput="onCrop()" style="margin:0"><span id="cropZ1V" style="text-align:right">100%</span>
+        </div>
+        <button class="pbtn" onclick="resetCrop()" style="width:100%;margin-bottom:8px;font-size:9px">↺ Reset crop</button>
+
+        <div class="ptitle" style="margin-top:2px">Exportar malla 3D</div>
         <div class="clabel">Isovalue HU <span class="cval" id="isoVal3D">300</span></div>
         <input type="range" class="rng" id="isoS3D" min="-500" max="2000" value="300" oninput="$('isoVal3D').textContent=this.value" style="width:100%;margin-bottom:8px">
         <div class="clabel">Suavizado <span class="cval" id="smoothVal3D">1</span> pas.</div>
@@ -317,11 +415,23 @@ kbd{font-family:var(--mono);font-size:9px;background:var(--bg3);border:1px solid
         <p id="subHint3D" style="font-family:var(--mono);font-size:9px;color:var(--t2);margin-bottom:8px">Resolución completa</p>
         <div class="pgbar" id="pgbar3D" style="display:none;margin-bottom:6px"><div class="pgfill" id="pgfill3D" style="width:0%"></div></div>
         <button class="pbtn" id="btnMC3D" onclick="runMC3D()" style="width:100%;margin-bottom:5px;color:var(--grn);border-color:var(--grn)">⬡ Calcular malla</button>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:5px">
           <button class="pbtn" id="btnSTL3D" onclick="downloadSTL3D()" disabled style="opacity:.35">↓ STL</button>
           <button class="pbtn" id="btnOBJ3D" onclick="downloadOBJ3D()" disabled style="opacity:.35">↓ OBJ</button>
+          <button class="pbtn" id="btnPreview3D" onclick="toggleMeshPreview()" disabled style="opacity:.35">◈ Preview</button>
         </div>
         <div id="mcInfo3D" style="font-family:var(--mono);font-size:9px;color:var(--t2);margin-top:6px;line-height:1.6"></div>
+
+        <div class="ptitle" style="margin-top:14px">Exportar volumen (3D Slicer)</div>
+        <p style="font-family:var(--mono);font-size:9px;color:var(--t2);line-height:1.6;margin-bottom:8px">
+          Exporta el volumen raw con metadatos espaciales para segmentación en 3D Slicer, ITK-SNAP o ParaView.
+        </p>
+        <div class="pgbar" id="pgbarVol" style="display:none;margin-bottom:6px"><div class="pgfill" id="pgfillVol" style="width:0%"></div></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px">
+          <button class="pbtn" id="btnNRRD" onclick="exportNRRD()" style="color:var(--cyan);border-color:var(--cyan)">↓ NRRD</button>
+          <button class="pbtn" id="btnVTK" onclick="exportVTK()">↓ VTK</button>
+        </div>
+        <div id="volExportInfo" style="font-family:var(--mono);font-size:9px;color:var(--t2);margin-top:6px;line-height:1.6"></div>
       </div>
       <div class="cgrp">
         <div class="ptitle" style="display:flex;align-items:center;justify-content:space-between">
@@ -400,52 +510,67 @@ function onFileInput(e){ processFiles(Array.from(e.target.files)); }
 function onDragOver(e){ e.preventDefault(); $('dz').classList.add('over'); }
 function onDragLeave(){ $('dz').classList.remove('over'); }
 function onDrop(e){
-  e.preventDefault(); $('dz').classList.remove('over');
+  e.preventDefault(); e.stopPropagation();
+  $('dz').classList.remove('over');
 
-  // Helper: read ALL entries from a directory (readEntries returns max 100 at a time)
-  async function readAllEntries(reader){
-    const all=[];
-    while(true){
-      const batch=await new Promise((res,rej)=>reader.readEntries(res,rej));
-      if(!batch.length) break;
-      all.push(...batch);
+  // On file:// protocol the FileSystem API is blocked by Chrome security policy.
+  // Use dataTransfer.files directly — works for flat folders and file:// origins.
+  // On http:// we use the FileSystem API for recursive subfolder support.
+  const isFileProtocol = location.protocol === 'file:';
+
+  if(isFileProtocol){
+    const flat = Array.from(e.dataTransfer?.files||[]);
+    if(flat.length){
+      processFiles(flat);
+    } else {
+      // Chrome blocks folder drops on file:// — guide user to click instead
+      toast('En local usa el botón Click para abrir carpeta','err');
+      $('dz').style.borderColor='var(--amb)';
+      setTimeout(()=>$('dz').style.borderColor='',2000);
     }
-    return all;
+    return;
   }
 
-  async function walk(entry){
-    if(entry.isFile) return new Promise((res,rej)=>entry.file(f=>{files.push(f);res();},rej));
-    const entries=await readAllEntries(entry.createReader());
-    for(const e2 of entries) await walk(e2);
-  }
-
-  const files=[];
-  const items=e.dataTransfer.items;
-
+  // http:// / https:// — FileSystem API with recursive walk
+  const items = e.dataTransfer?.items;
   if(items && items.length){
-    const proms=[];
+    const entries=[];
     for(const item of items){
-      const en=item.webkitGetAsEntry?.();
-      if(en) proms.push(walk(en));
+      const en = item.webkitGetAsEntry?.();
+      if(en) entries.push(en);
     }
-    Promise.all(proms).then(()=>{
-      if(files.length) processFiles(files);
-      else{
-        // Fallback: webkitGetAsEntry not supported
-        const fallback=Array.from(e.dataTransfer.files);
-        if(fallback.length) processFiles(fallback);
+    if(entries.length){
+      const files=[];
+      async function readAllEntries(reader){
+        const all=[];
+        while(true){
+          const batch = await new Promise(res=>reader.readEntries(res, ()=>res([])));
+          if(!batch.length) break;
+          all.push(...batch);
+        }
+        return all;
       }
-    }).catch(err=>{
-      console.error('[drop]',err);
-      // Last resort fallback
-      const fallback=Array.from(e.dataTransfer.files);
-      if(fallback.length) processFiles(fallback);
-    });
-  } else {
-    // Firefox fallback
-    const fallback=Array.from(e.dataTransfer.files||[]);
-    if(fallback.length) processFiles(fallback);
+      async function walk(entry){
+        if(entry.isFile){
+          await new Promise(res=>entry.file(f=>{files.push(f);res();}, ()=>res()));
+        } else if(entry.isDirectory){
+          const children = await readAllEntries(entry.createReader());
+          for(const child of children) await walk(child);
+        }
+      }
+      Promise.all(entries.map(en=>walk(en)))
+        .then(()=>{
+          if(files.length) processFiles(files);
+          else toast('No se encontraron archivos','err');
+        });
+      return;
+    }
   }
+
+  // Fallback
+  const flat = Array.from(e.dataTransfer?.files||[]);
+  if(flat.length) processFiles(flat);
+  else toast('No se detectaron archivos','err');
 }
 
 async function processFiles(rawFiles){
@@ -520,6 +645,8 @@ async function processFiles(rawFiles){
   renderSeriesList();
   showViewport();
   loadSeries(Object.keys(S.series)[0]);
+  // Background: decode first slice of remaining series to get real dimensions
+  _prefetchDims(Object.keys(S.series).slice(1));
 }
 
 // ─── META ──────────────────────────────────────────────────────────────────────
@@ -542,6 +669,24 @@ function extractMeta(ds){
   };
 }
 
+// Pre-decode first slice of each series in background to get real dimensions
+async function _prefetchDims(uids){
+  for(const uid of uids){
+    const sr=S.series[uid]; if(!sr) continue;
+    try{
+      const inst=await decode(sr.instances[0]);
+      if(inst?.rows>0 && inst?.cols>0){
+        sr.metadata.rows=inst.rows;
+        sr.metadata.cols=inst.cols;
+        // Update badge in list
+        const badge=document.querySelector(`.sitem[data-uid="${uid}"] .smeta`);
+        if(badge) badge.textContent=`${sr.instances.length} img · ${inst.rows}x${inst.cols}`;
+      }
+    } catch(e){ /* skip silently */ }
+    await yield_(); // yield between series to keep UI responsive
+  }
+}
+
 // ─── SERIES LIST ───────────────────────────────────────────────────────────────
 function renderSeriesList(){
   const uids=Object.keys(S.series);
@@ -551,7 +696,8 @@ function renderSeriesList(){
     const sr=S.series[uid], m=sr.metadata;
     const div=document.createElement('div');
     div.className='sitem'; div.dataset.uid=uid;
-    div.innerHTML=`<div class="badge">${m.modality}</div><div class="sdesc">${m.seriesDesc}</div><div class="smeta">${sr.instances.length} img · ${m.rows}x${m.cols}</div>`;
+    const dimOK = m.rows && m.cols && /^\d+$/.test(String(m.rows)) && /^\d+$/.test(String(m.cols));
+    div.innerHTML=`<div class="badge">${m.modality}</div><div class="sdesc">${m.seriesDesc}</div><div class="smeta">${sr.instances.length} img · ${dimOK ? m.rows+'x'+m.cols : '···'}</div>`;
     div.onclick=()=>loadSeries(uid);
     con.appendChild(div);
   });
@@ -577,6 +723,25 @@ async function loadSeries(uid){
     mrow('Images',total,true)+mrow('Dim',`${m.rows}x${m.cols}`)+mrow('Px Spc',m.pixSpc)+
     mrow('Thk',m.sliceThk)+mrow('KVP',m.kvp)+mrow('Manuf.',m.manufacturer)+mrow('Inst.',m.institution);
   await renderSlice(0);
+
+  // After first decode, inst0.rows/cols are always correct (from decode walker).
+  // Update metadata and UI if the parse-time values were missing or '?'.
+  const inst0=sr.instances[0];
+  if(inst0?.rows>0 && inst0?.cols>0){
+    const changed = (String(m.rows)!==String(inst0.rows) || String(m.cols)!==String(inst0.cols));
+    m.rows=inst0.rows; m.cols=inst0.cols;
+    if(changed){
+      // Refresh series list badge
+      const badge=document.querySelector(`.sitem[data-uid="${uid}"] .smeta`);
+      if(badge) badge.textContent=`${total} img · ${m.rows}x${m.cols}`;
+      // Refresh metadata panel
+      $('metaGrid').innerHTML=
+        mrow('Modality',m.modality,true)+mrow('Series',m.seriesDesc)+mrow('Body',m.bodyPart)+
+        mrow('Images',total,true)+mrow('Dim',`${m.rows}x${m.cols}`,true)+mrow('Px Spc',m.pixSpc)+
+        mrow('Thk',m.sliceThk)+mrow('KVP',m.kvp)+mrow('Manuf.',m.manufacturer)+mrow('Inst.',m.institution);
+    }
+  }
+
   buildThumbs();
 }
 
@@ -1253,17 +1418,18 @@ function showViewport(){
   switchView('2d');
 }
 function switchView(mode){
-  $('t2d').classList.toggle('active',mode==='2d');
-  $('tmpr').classList.toggle('active',mode==='mpr');
-  $('t3d').classList.toggle('active',mode==='3d');
+  ['2d','mpr','3d','comp'].forEach(m=>{
+    const t=$('t'+m); if(t) t.classList.toggle('active',m===mode);
+  });
   $('v2d').style.display=mode==='2d'?'flex':'none';
   $('v3d').style.display=mode==='3d'?'block':'none';
   $('vmpr').style.display=mode==='mpr'?'block':'none';
+  $('vcomp').style.display=mode==='comp'?'flex':'none';
   $('ctrl3d').style.display=mode==='3d'?'block':'none';
-  if(mode!=='3d'){ _3danim=false; }  // pause WebGL loop when not visible
-  if(mode==='3d') requestAnimationFrame(()=>init3D()); // defer 1 frame so layout recalculates
+  if(mode!=='3d'){ _3danim=false; }
+  if(mode==='3d') requestAnimationFrame(()=>init3D());
   if(mode==='mpr') initMPR();
-  else if(S.mprVol && S.mprUID===S.activeUID && mode==='mpr') renderMPR();
+  if(mode==='comp') initComp();
 }
 
 // ─── MPR ────────────────────────────────────────────────────────────────────────
@@ -1503,9 +1669,9 @@ uniform vec3  u_dims;
 uniform vec3  u_camPos;
 uniform mat3  u_rot;
 uniform vec2  u_pan;
-uniform float u_aspect;  // canvas W/H for correct ray direction
+uniform float u_aspect;
 uniform float u_ww, u_wc, u_alphaScale, u_thresh, u_gmin, u_grange;
-uniform int   u_steps, u_colormap;
+uniform int   u_steps, u_colormap, u_mode;  // u_mode: 0=vol, 1=iso
 
 bool intersectBox(vec3 ro,vec3 rd,out float tN,out float tF){
   vec3 inv=1.0/rd;
@@ -1526,14 +1692,19 @@ vec3 colormap(float t){
   return vec3(t);
 }
 
+// Central-difference gradient for surface normal estimation
+vec3 gradient(vec3 pos){
+  vec3 d=vec3(1.0)/u_dims;
+  float dx=texture(u_vol,pos+vec3(d.x,0,0)).r-texture(u_vol,pos-vec3(d.x,0,0)).r;
+  float dy=texture(u_vol,pos+vec3(0,d.y,0)).r-texture(u_vol,pos-vec3(0,d.y,0)).r;
+  float dz=texture(u_vol,pos+vec3(0,0,d.z)).r-texture(u_vol,pos-vec3(0,0,d.z)).r;
+  return normalize(vec3(dx,dy,dz));
+}
+
 void main(){
   vec2 ndc=vUV*2.0-1.0;
-  // Ray direction in view space, then rotated into object space
   vec3 rd_view=normalize(vec3(ndc.x*u_aspect,ndc.y,-2.0));
   vec3 rd=u_rot*rd_view;
-
-  // Ray origin: camera is fixed in world space.
-  // Transform into object space: translate so volume center = origin, rotate, translate back.
   vec3 ro_world=u_camPos+vec3(u_pan,0.0);
   vec3 ro=(u_rot*(ro_world-vec3(0.5)))+vec3(0.5);
   float tN,tF;
@@ -1541,8 +1712,47 @@ void main(){
   tN=max(tN,0.0);
   float dt=(tF-tN)/float(u_steps);
   vec3 pos=ro+rd*(tN+dt*0.5);
-  vec4 acc=vec4(0.0);
   float lo=u_wc-u_ww*0.5;
+  vec4 bg=vec4(0.02,0.03,0.05,1.0);
+
+  // ── ISO surface mode ────────────────────────────────────────────────────────
+  if(u_mode==1){
+    float prevRaw=texture(u_vol,pos).r;
+    for(int i=0;i<512;i++){
+      if(i>=u_steps) break;
+      pos+=rd*dt;
+      if(pos.x<0.0||pos.y<0.0||pos.z<0.0||pos.x>1.0||pos.y>1.0||pos.z>1.0) break;
+      float raw=texture(u_vol,pos).r;
+      // Detect zero crossing: prevRaw below threshold, raw at or above
+      if(raw>=u_thresh && prevRaw<u_thresh){
+        // Refine hit by linear interpolation between prev and current step
+        float f=(u_thresh-prevRaw)/max(raw-prevRaw,1e-5);
+        vec3 hit=(pos-rd*dt)+rd*dt*f;
+        // Surface normal via central differences of the volume gradient
+        vec3 N=gradient(hit);
+        if(dot(N,-rd)<0.0) N=-N;  // always face camera
+        // Phong shading — two lights
+        vec3 L1=normalize(vec3(0.5,0.8,0.6));
+        vec3 L2=normalize(vec3(-0.5,-0.2,0.5));
+        float diff=clamp(dot(N,L1),0.0,1.0)*0.6
+                  +clamp(dot(N,L2),0.0,1.0)*0.2
+                  +0.2;  // ambient
+        vec3 H=normalize(L1+(-rd));
+        float spec=pow(clamp(dot(N,H),0.0,1.0),64.0)*0.35;
+        // Color from colormap at normalised HU value
+        float hu=raw*u_grange+u_gmin;
+        float norm=clamp((hu-(u_wc-u_ww*0.5))/u_ww,0.0,1.0);
+        vec3 col=colormap(norm)*diff+vec3(spec);
+        fragColor=vec4(clamp(col,0.0,1.0),1.0);
+        return;
+      }
+      prevRaw=raw;
+    }
+    fragColor=bg; return;
+  }
+
+  // ── VOLUME mode (default) ───────────────────────────────────────────────────
+  vec4 acc=vec4(0.0);
   for(int i=0;i<512;i++){
     if(i>=u_steps||acc.a>=0.98) break;
     float raw=texture(u_vol,pos).r;
@@ -1660,10 +1870,14 @@ function _render3(){
   _gl3.uniform1f(u('u_gmin'),gmin);
   _gl3.uniform1f(u('u_grange'),grange);
   _gl3.uniform1i(u('u_colormap'),cmIdx[S.colormap]??0);
+  _gl3.uniform1i(u('u_mode'), S.mode3==='iso' ? 1 : 0);
   _gl3.activeTexture(_gl3.TEXTURE0);
   _gl3.bindTexture(_gl3.TEXTURE_3D,_vol3Tex);
   _gl3.uniform1i(u('u_vol'),0);
   _gl3.drawArrays(_gl3.TRIANGLES,0,3);
+
+  // Mesh preview overlay (drawn on top of volume)
+  _renderMeshOverlay();
 }
 
 function _build3DNavigation(canvas){
@@ -1757,8 +1971,13 @@ async function init3D(){
   const cont=$('v3d');
   let canvas=$('threeCanvas');
 
-  // Already loaded for this series — just re-attach nav and return
+  // Already loaded for this series — re-attach nav, ensure shader is current
   if(_vol3Tex && S.vol3DUID===S.activeUID){
+    // If shader doesn't have u_mode yet, recompile (first load after update)
+    if(_prog3 && _gl3.getUniformLocation(_prog3,'u_mode')===null){
+      _gl3.deleteProgram(_prog3); _prog3=null;
+      if(!_initGL3(canvas)){ showLD(false); return; }
+    }
     _build3DNavigation(canvas);
     if(!_3danim){ _3danim=true; _loop3(); }
     return;
@@ -1863,7 +2082,18 @@ function set3DMode(mode){
   ['vol','mip','iso'].forEach(m=>$('b3'+m)?.classList.toggle('active',m===mode));
   if(mode==='mip') renderMIP();
   else hideMIP();
-  toast('3D: '+mode.toUpperCase(),'cyan');
+  // In ISO mode, auto-set threshold to 50th percentile of HU range if still at default
+  if(mode==='iso' && S.vol3DGmin!=null){
+    const thEl=$('thS');
+    if(thEl){
+      // Suggest a threshold at ~40% of the data range as starting point
+      const suggested=Math.round(S.vol3DGmin + (S.vol3DGrange||1)*0.4);
+      thEl.value=Math.max(parseInt(thEl.min), Math.min(parseInt(thEl.max), suggested));
+      $('thVal').textContent=thEl.value;
+    }
+  }
+  if($('thVal')) $('thVal').style.color=mode==='iso'?'var(--grn)':'var(--cyan)';
+  toast('3D: '+mode.toUpperCase()+(mode==='iso'?' — ajusta Threshold HU':''),'cyan');
 }
 
 function update3DOpacity(v){ $('opVal').textContent=(v/100).toFixed(2); }
@@ -1879,6 +2109,382 @@ function reset3DCam(){
   _zoom3=1.8; _pan3X=0; _pan3Y=0;
 }
 
+
+// ─── CROP ROI ─────────────────────────────────────────────────────────────────
+const _crop = { x0:0, x1:1, y0:0, y1:1, z0:0, z1:1 };
+let _meshPreviewOn = false;
+let _meshProg = null;  // WebGL program for mesh preview
+
+function onCrop(){
+  // Read sliders (0–100%) → normalize to 0–1, enforce min < max
+  const r = id => parseInt($(id).value)/100;
+  _crop.x0 = Math.min(r('cropX0'), r('cropX1')-0.01);
+  _crop.x1 = Math.max(r('cropX1'), r('cropX0')+0.01);
+  _crop.y0 = Math.min(r('cropY0'), r('cropY1')-0.01);
+  _crop.y1 = Math.max(r('cropY1'), r('cropY0')+0.01);
+  _crop.z0 = Math.min(r('cropZ0'), r('cropZ1')-0.01);
+  _crop.z1 = Math.max(r('cropZ1'), r('cropZ0')+0.01);
+  // Update labels
+  ['x0','x1','y0','y1','z0','z1'].forEach(k=>{
+    const el=$('crop'+k.toUpperCase()+'V')||$('crop'+k[0].toUpperCase()+k[1]+'V');
+    if(el) el.textContent = Math.round(_crop[k]*100)+'%';
+  });
+  // Invalidate existing mesh so user knows they must recalculate
+  if(_mcTriangles){
+    _mcTriangles=null; _mcSTLBuffer=null; _meshPreviewOn=false;
+    ['btnSTL3D','btnOBJ3D','btnPreview3D'].forEach(id=>{
+      const b=$(id); if(b){b.disabled=true;b.style.opacity='.35';}
+    });
+    $('mcInfo3D').innerHTML='<span style="color:var(--amb)">⚠ Crop modificado — recalcula la malla</span>';
+  }
+}
+
+function resetCrop(){
+  ['cropX0','cropY0','cropZ0'].forEach(id=>{ const el=$(id); if(el) el.value=0; });
+  ['cropX1','cropY1','cropZ1'].forEach(id=>{ const el=$(id); if(el) el.value=100; });
+  _crop.x0=0;_crop.x1=1;_crop.y0=0;_crop.y1=1;_crop.z0=0;_crop.z1=1;
+  ['cropX0V','cropX1V','cropY0V','cropY1V','cropZ0V','cropZ1V'].forEach(id=>{
+    const el=$(id); if(el) el.textContent='0%';
+  });
+  $('cropX1V').textContent='100%';$('cropY1V').textContent='100%';$('cropZ1V').textContent='100%';
+  onCrop();
+}
+
+// ─── MESH PREVIEW (WebGL overlay) ─────────────────────────────────────────────
+function _initMeshProg(){
+  if(_meshProg||!_gl3) return;
+  const vs=`#version 300 es
+precision highp float;
+uniform mat4 u_mvp;
+in vec3 a_pos;
+in vec3 a_nrm;
+out vec3 vN;
+void main(){ vN=a_nrm; gl_Position=u_mvp*vec4(a_pos,1.0); }`;
+  const fs=`#version 300 es
+precision highp float;
+in vec3 vN;
+out vec4 fragColor;
+uniform vec3 u_color;
+void main(){
+  vec3 L=normalize(vec3(0.5,1.0,0.8));
+  float d=max(dot(normalize(vN),L),0.0)*0.7+0.3;
+  fragColor=vec4(u_color*d,0.72);
+}`;
+  function mkShader(type,src){
+    const s=_gl3.createShader(type);_gl3.shaderSource(s,src);_gl3.compileShader(s);
+    if(!_gl3.getShaderParameter(s,_gl3.COMPILE_STATUS)){console.error(_gl3.getShaderInfoLog(s));return null;}
+    return s;
+  }
+  const p=_gl3.createProgram();
+  _gl3.attachShader(p,mkShader(_gl3.VERTEX_SHADER,vs));
+  _gl3.attachShader(p,mkShader(_gl3.FRAGMENT_SHADER,fs));
+  _gl3.linkProgram(p);
+  if(!_gl3.getProgramParameter(p,_gl3.LINK_STATUS)){console.error('mesh prog link fail');return;}
+  _meshProg=p;
+}
+
+// Build flat Float32 arrays from _mcTriangles for GPU upload
+let _meshVAO=null, _meshVBO=null, _meshNBO=null, _meshCount=0;
+function _uploadMeshToGPU(){
+  if(!_gl3||!_mcTriangles||!_mcTriangles.length) return;
+  _initMeshProg(); if(!_meshProg) return;
+
+  const slices=S.vol3DSlices; if(!slices) return;
+  const W=slices[0].cols, H=slices[0].rows, D=slices.length;
+  const meta=_getVolMeta();
+  const {psX,psY,psZ}=meta;
+
+  // Normalize verts to [-0.5..0.5] centred — same space as the volume box
+  const physW=W*psX, physH=H*psY, physD=D*psZ;
+  const maxDim=Math.max(physW,physH,physD);
+
+  const pos=new Float32Array(_mcTriangles.length*9);
+  const nrm=new Float32Array(_mcTriangles.length*9);
+  let idx=0;
+  for(const tri of _mcTriangles){
+    const fn=tri[0],v0=tri[1],v1=tri[2],v2=tri[3];
+    if(!fn||!v0) continue;
+    for(const v of [v0,v1,v2]){
+      pos[idx]  = (v[0]/maxDim)-physW/maxDim*0.5;
+      pos[idx+1]= (v[1]/maxDim)-physH/maxDim*0.5;
+      pos[idx+2]= (v[2]/maxDim)-physD/maxDim*0.5;
+      nrm[idx]=fn[0]; nrm[idx+1]=fn[1]; nrm[idx+2]=fn[2];
+      idx+=3;
+    }
+  }
+  _meshCount=idx/3;
+
+  if(_meshVAO) _gl3.deleteVertexArray(_meshVAO);
+  if(_meshVBO) _gl3.deleteBuffer(_meshVBO);
+  if(_meshNBO) _gl3.deleteBuffer(_meshNBO);
+
+  _meshVAO=_gl3.createVertexArray(); _gl3.bindVertexArray(_meshVAO);
+
+  _meshVBO=_gl3.createBuffer();
+  _gl3.bindBuffer(_gl3.ARRAY_BUFFER,_meshVBO);
+  _gl3.bufferData(_gl3.ARRAY_BUFFER,pos,_gl3.STATIC_DRAW);
+  const aPos=_gl3.getAttribLocation(_meshProg,'a_pos');
+  _gl3.enableVertexAttribArray(aPos); _gl3.vertexAttribPointer(aPos,3,_gl3.FLOAT,false,0,0);
+
+  _meshNBO=_gl3.createBuffer();
+  _gl3.bindBuffer(_gl3.ARRAY_BUFFER,_meshNBO);
+  _gl3.bufferData(_gl3.ARRAY_BUFFER,nrm,_gl3.STATIC_DRAW);
+  const aNrm=_gl3.getAttribLocation(_meshProg,'a_nrm');
+  _gl3.enableVertexAttribArray(aNrm); _gl3.vertexAttribPointer(aNrm,3,_gl3.FLOAT,false,0,0);
+
+  _gl3.bindVertexArray(null);
+}
+
+function _renderMeshOverlay(){
+  if(!_meshPreviewOn||!_meshVAO||!_meshProg||!_gl3) return;
+
+  const canvas=$('threeCanvas');
+  const W=canvas.width, H=canvas.height;
+
+  // Build MVP: perspective * view * model (model = identity, view = rotation)
+  const fov=40*Math.PI/180, aspect=W/H, near=0.01, far=10;
+  const f=1/Math.tan(fov/2);
+  // Column-major perspective matrix
+  const P=[f/aspect,0,0,0, 0,f,0,0, 0,0,(far+near)/(near-far),-1, 0,0,2*far*near/(near-far),0];
+
+  // View: camera at (0,0,zoom*0.5) looking at origin — matches volume render
+  const tz=-_zoom3*0.5;
+  const V=[1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,tz,1]; // translate Z
+
+  // Rotation from trackball
+  const M=window._rot3Mat||[1,0,0,0,1,0,0,0,1];
+  // Expand mat3 to mat4 (column-major)
+  const R=[M[0],M[1],M[2],0, M[3],M[4],M[5],0, M[6],M[7],M[8],0, 0,0,0,1];
+
+  // MVP = P * V * R  (multiply 4x4 column-major)
+  function mul4(A,B){
+    const C=new Array(16).fill(0);
+    for(let col=0;col<4;col++) for(let row=0;row<4;row++)
+      for(let k=0;k<4;k++) C[col*4+row]+=A[k*4+row]*B[col*4+k];
+    return C;
+  }
+  const MVP=mul4(P,mul4(V,R));
+
+  _gl3.enable(_gl3.DEPTH_TEST);
+  _gl3.enable(_gl3.BLEND);
+  _gl3.blendFunc(_gl3.SRC_ALPHA,_gl3.ONE_MINUS_SRC_ALPHA);
+  _gl3.useProgram(_meshProg);
+  _gl3.uniformMatrix4fv(_gl3.getUniformLocation(_meshProg,'u_mvp'),false,MVP);
+  _gl3.uniform3f(_gl3.getUniformLocation(_meshProg,'u_color'),0.0,0.85,1.0); // cyan mesh
+  _gl3.bindVertexArray(_meshVAO);
+  _gl3.drawArrays(_gl3.TRIANGLES,0,_meshCount);
+  _gl3.bindVertexArray(null);
+  _gl3.disable(_gl3.DEPTH_TEST);
+  _gl3.disable(_gl3.BLEND);
+}
+
+function toggleMeshPreview(){
+  if(!_mcTriangles||!_mcTriangles.length){ toast('Calcula la malla primero','err'); return; }
+  _meshPreviewOn=!_meshPreviewOn;
+  if(_meshPreviewOn && !_meshVAO) _uploadMeshToGPU();
+  const btn=$('btnPreview3D');
+  if(btn){ btn.style.color=_meshPreviewOn?'var(--cyan)':''; btn.style.borderColor=_meshPreviewOn?'var(--cyan)':''; btn.textContent=_meshPreviewOn?'◈ ON':'◈ Preview'; }
+  toast(_meshPreviewOn?'Preview malla activado':'Preview malla desactivado', _meshPreviewOn?'cyan':'');
+}
+
+// ─── VOLUME EXPORT: NRRD + VTK ───────────────────────────────────────────────
+
+function _getVolMeta(){
+  // Returns spatial metadata from the loaded 3D slices
+  const slices = S.vol3DSlices;
+  if(!slices||!slices.length) return null;
+  const ds0 = slices[0].ds;
+  const W = slices[0].cols, H = slices[0].rows, D = slices.length;
+
+  // Pixel spacing XY (mm)
+  const psSrc = (ds0?.string?.('x00280030')||'1\\1').split('\\');
+  const psX = parseFloat(psSrc[0])||1;
+  const psY = parseFloat(psSrc[1]||psSrc[0])||1;
+  // Slice thickness / spacing Z (mm)
+  const psZ = parseFloat(ds0?.string?.('x00180088') ||   // SpacingBetweenSlices
+               ds0?.string?.('x00180050') || '1')||1;    // SliceThickness fallback
+
+  // Image orientation patient (direction cosines row + col)
+  const iopStr = ds0?.string?.('x00200037')||'1\\0\\0\\0\\1\\0';
+  const iop = iopStr.split('\\').map(Number);
+  // Row direction (X cosines) and Col direction (Y cosines)
+  const rowDir = [iop[0]||1, iop[1]||0, iop[2]||0];
+  const colDir = [iop[3]||0, iop[4]||1, iop[5]||0];
+  // Normal = cross product of row x col
+  const normDir = [
+    rowDir[1]*colDir[2]-rowDir[2]*colDir[1],
+    rowDir[2]*colDir[0]-rowDir[0]*colDir[2],
+    rowDir[0]*colDir[1]-rowDir[1]*colDir[0]
+  ];
+
+  // Image position patient of first slice (origin)
+  const ippStr = ds0?.string?.('x00200032')||'0\\0\\0';
+  const origin = ippStr.split('\\').map(Number);
+
+  // HU range
+  const gmin = S.vol3DGmin??0, grange = S.vol3DGrange??1;
+
+  return {W, H, D, psX, psY, psZ, rowDir, colDir, normDir, origin, gmin, grange};
+}
+
+function _buildVolInt16(slices, meta){
+  const {W, H, D} = meta;
+  // Apply crop ROI
+  const x0=Math.round(_crop.x0*W), x1=Math.round(_crop.x1*W);
+  const y0=Math.round(_crop.y0*H), y1=Math.round(_crop.y1*H);
+  const z0=Math.round(_crop.z0*D), z1=Math.round(_crop.z1*D);
+  const cW=x1-x0, cH=y1-y0, cD=z1-z0;
+  // Update meta dims for caller
+  meta.W=cW; meta.H=cH; meta.D=cD;
+  // Adjust origin: shift by crop offset in physical space
+  meta.origin[0]+= x0*meta.psX;
+  meta.origin[1]+= y0*meta.psY;
+  meta.origin[2]+= z0*meta.psZ;
+
+  const buf = new Int16Array(cW * cH * cD);
+  for(let z=0; z<cD; z++){
+    const hu = slices[z0+z].hu;
+    const off = z * cW * cH;
+    for(let y=0; y<cH; y++) for(let x=0; x<cW; x++)
+      buf[off+y*cW+x] = Math.max(-32768, Math.min(32767, Math.round(hu[(y0+y)*W+(x0+x)])));
+  }
+  return buf;
+}
+
+async function exportNRRD(){
+  if(!S.vol3DSlices||!S.vol3DSlices.length){ toast('Carga primero el volumen 3D','err'); return; }
+
+  $('btnNRRD').disabled=true;
+  $('pgbarVol').style.display='block';
+  $('pgfillVol').style.width='10%';
+  $('volExportInfo').textContent='Construyendo NRRD…';
+  setStatus('Exportando NRRD…','warn');
+  await yield_();
+
+  const meta = _getVolMeta();
+  const slices = S.vol3DSlices;
+  const {W, H, D, psX, psY, psZ, rowDir, colDir, normDir, origin} = meta;
+
+  $('pgfillVol').style.width='40%'; await yield_();
+  const vol = _buildVolInt16(slices, meta);
+  $('pgfillVol').style.width='80%'; await yield_();
+
+  // NRRD header — space directions encode voxel size + orientation
+  // NRRD stores data in raw little-endian binary after the header
+  // space directions: each column = axis vector * spacing
+  const rdX=rowDir[0]*psX, rdY=rowDir[1]*psX, rdZ=rowDir[2]*psX;
+  const cdX=colDir[0]*psY, cdY=colDir[1]*psY, cdZ=colDir[2]*psY;
+  const ndX=normDir[0]*psZ, ndY=normDir[1]*psZ, ndZ=normDir[2]*psZ;
+
+  const header = [
+    'NRRD0005',
+    'type: short',
+    'dimension: 3',
+    `sizes: ${W} ${H} ${D}`,
+    `space: left-posterior-superior`,
+    `space directions: (${rdX.toFixed(6)},${rdY.toFixed(6)},${rdZ.toFixed(6)}) (${cdX.toFixed(6)},${cdY.toFixed(6)},${cdZ.toFixed(6)}) (${ndX.toFixed(6)},${ndY.toFixed(6)},${ndZ.toFixed(6)})`,
+    `space origin: (${origin[0].toFixed(4)},${origin[1].toFixed(4)},${origin[2].toFixed(4)})`,
+    'kinds: domain domain domain',
+    'endian: little',
+    'encoding: raw',
+    '',  // blank line = end of header, binary follows
+    ''
+  ].join('\n');
+
+  // Combine header (UTF-8) + binary Int16 data
+  const headerBytes = new TextEncoder().encode(header);
+  const dataBytes = new Uint8Array(vol.buffer);
+  const combined = new Uint8Array(headerBytes.length + dataBytes.length);
+  combined.set(headerBytes, 0);
+  combined.set(dataBytes, headerBytes.length);
+
+  $('pgfillVol').style.width='100%'; await yield_();
+
+  const sizeMB = (combined.length/1048576).toFixed(1);
+  const fname = `medvis_${W}x${H}x${D}.nrrd`;
+
+  const url = URL.createObjectURL(new Blob([combined],{type:'application/octet-stream'}));
+  const a = document.createElement('a');
+  a.href=url; a.download=fname;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url), 2000);
+
+  $('pgbarVol').style.display='none';
+  $('volExportInfo').innerHTML=
+    `<span style="color:var(--cyan)">${fname}</span><br>`+
+    `${W}×${H}×${D} vox · ${psX.toFixed(2)}×${psY.toFixed(2)}×${psZ.toFixed(2)} mm · ${sizeMB} MB<br>`+
+    `<span style="color:var(--t2)">Abrir en 3D Slicer: File → Add Data</span>`;
+  $('btnNRRD').disabled=false;
+  setStatus('NRRD exportado','ok');
+  toast(`NRRD (${sizeMB} MB) descargado`,'cyan');
+}
+
+async function exportVTK(){
+  if(!S.vol3DSlices||!S.vol3DSlices.length){ toast('Carga primero el volumen 3D','err'); return; }
+
+  $('btnVTK').disabled=true;
+  $('pgbarVol').style.display='block';
+  $('pgfillVol').style.width='10%';
+  $('volExportInfo').textContent='Construyendo VTK…';
+  setStatus('Exportando VTK…','warn');
+  await yield_();
+
+  const meta = _getVolMeta();
+  const slices = S.vol3DSlices;
+  const {W, H, D, psX, psY, psZ, origin} = meta;
+
+  $('pgfillVol').style.width='40%'; await yield_();
+  const vol = _buildVolInt16(slices, meta);
+  $('pgfillVol').style.width='80%'; await yield_();
+
+  // VTK legacy structured points format (binary)
+  const hdr = [
+    '# vtk DataFile Version 3.0',
+    'MedVis Studio Volume Export',
+    'BINARY',
+    'DATASET STRUCTURED_POINTS',
+    `DIMENSIONS ${W} ${H} ${D}`,
+    `ORIGIN ${origin[0].toFixed(4)} ${origin[1].toFixed(4)} ${origin[2].toFixed(4)}`,
+    `SPACING ${psX.toFixed(6)} ${psY.toFixed(6)} ${psZ.toFixed(6)}`,
+    `POINT_DATA ${W*H*D}`,
+    'SCALARS scalars short 1',
+    'LOOKUP_TABLE default',
+    ''
+  ].join('\n');
+
+  // VTK binary is big-endian — swap bytes of Int16
+  const swapped = new Int16Array(vol.length);
+  for(let i=0; i<vol.length; i++){
+    const v=vol[i];
+    swapped[i]=((v&0xFF)<<8)|((v>>8)&0xFF);
+  }
+
+  const headerBytes = new TextEncoder().encode(hdr);
+  const dataBytes = new Uint8Array(swapped.buffer);
+  const combined = new Uint8Array(headerBytes.length + dataBytes.length);
+  combined.set(headerBytes, 0);
+  combined.set(dataBytes, headerBytes.length);
+
+  $('pgfillVol').style.width='100%'; await yield_();
+
+  const sizeMB = (combined.length/1048576).toFixed(1);
+  const fname = `medvis_${W}x${H}x${D}.vtk`;
+
+  const url = URL.createObjectURL(new Blob([combined],{type:'application/octet-stream'}));
+  const a = document.createElement('a');
+  a.href=url; a.download=fname;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url), 2000);
+
+  $('pgbarVol').style.display='none';
+  $('volExportInfo').innerHTML=
+    `<span style="color:var(--cyan)">${fname}</span><br>`+
+    `${W}×${H}×${D} vox · ${psX.toFixed(2)}×${psY.toFixed(2)}×${psZ.toFixed(2)} mm · ${sizeMB} MB<br>`+
+    `<span style="color:var(--t2)">Abrir en ParaView/Slicer: File → Open</span>`;
+  $('btnVTK').disabled=false;
+  setStatus('VTK exportado','ok');
+  toast(`VTK (${sizeMB} MB) descargado`,'cyan');
+}
 
 // ─── MARCHING CUBES + MESH EXPORT ────────────────────────────────────────────
 let _mcTriangles=null; // last MC result
@@ -1924,30 +2530,38 @@ async function runMC3D(){
   const volW=slices[0].cols, volH=slices[0].rows, volD=slices.length;
   const N=volW*volH;
 
-  // Build flat float volume
-  let vol=new Float32Array(N*volD);
-  for(let z=0;z<volD;z++){
-    const hu=slices[z].hu;
-    for(let i=0;i<N;i++) vol[z*N+i]=hu[i];
+  // Apply crop ROI
+  const x0=Math.round(_crop.x0*volW), x1=Math.round(_crop.x1*volW);
+  const y0=Math.round(_crop.y0*volH), y1=Math.round(_crop.y1*volH);
+  const z0=Math.round(_crop.z0*volD), z1=Math.round(_crop.z1*volD);
+  const cW=x1-x0, cH=y1-y0, cD=z1-z0;
+  toast(`ROI: ${cW}×${cH}×${cD} vox`,'');
+
+  // Build flat float volume (cropped)
+  let vol=new Float32Array(cW*cH*cD);
+  for(let z=0;z<cD;z++){
+    const src=slices[z0+z].hu;
+    for(let y=0;y<cH;y++) for(let x=0;x<cW;x++)
+      vol[z*cW*cH+y*cW+x]=src[(y0+y)*volW+(x0+x)];
   }
 
-  // Smooth (box filter)
+  // Smooth (box filter) on cropped volume
   for(let p=0;p<smoothP;p++){
     const s2=new Float32Array(vol.length);
-    for(let z=0;z<volD;z++) for(let y=0;y<volH;y++) for(let x=0;x<volW;x++){
+    for(let z=0;z<cD;z++) for(let y=0;y<cH;y++) for(let x=0;x<cW;x++){
       let sum=0,cnt=0;
       for(let dz=-1;dz<=1;dz++) for(let dy=-1;dy<=1;dy++) for(let dx=-1;dx<=1;dx++){
         const nx=x+dx,ny=y+dy,nz=z+dz;
-        if(nx>=0&&ny>=0&&nz>=0&&nx<volW&&ny<volH&&nz<volD){sum+=vol[nz*N+ny*volW+nx];cnt++;}
+        if(nx>=0&&ny>=0&&nz>=0&&nx<cW&&ny<cH&&nz<cD){sum+=vol[nz*cW*cH+ny*cW+nx];cnt++;}
       }
-      s2[z*N+y*volW+x]=sum/cnt;
+      s2[z*cW*cH+y*cW+x]=sum/cnt;
     }
     vol=s2; await yield_();
   }
 
   const psx=parseFloat((slices[0].ds?.string?.('x00280030')||'1').split('\\')[0])||1;
   const psz=parseFloat(slices[0].ds?.string?.('x00180050')||'1')||1;
-  const W2=Math.floor(volW/sub), H2=Math.floor(volH/sub), D2=Math.floor(volD/sub);
+  const W2=Math.floor(cW/sub), H2=Math.floor(cH/sub), D2=Math.floor(cD/sub);
   const tris=[];
 
   for(let iz=0;iz<D2-1;iz++){
@@ -1955,19 +2569,19 @@ async function runMC3D(){
       for(let ix=0;ix<W2-1;ix++){
         const x=ix*sub,y=iy*sub,z=iz*sub;
         let ci=0;
-        const vals=_MC_CORNERS.map(([dx,dy,dz])=>_mcSample(vol,volW,volH,x+dx,y+dy,z+dz));
+        const vals=_MC_CORNERS.map(([dx,dy,dz])=>_mcSample(vol,cW,cH,x+dx,y+dy,z+dz));
         for(let i=0;i<8;i++) if(vals[i]>=iso) ci|=(1<<i);
         const tt=_MC_TRI[ci]; if(!tt||tt[0]===-1) continue;
         for(let ti=0;ti<tt.length;ti+=3){
           if(tt[ti]===-1) break;
-          const v0=_mcEdgeVtx(vol,volW,volH,psx,psz,x,y,z,tt[ti],iso);
-          const v1=_mcEdgeVtx(vol,volW,volH,psx,psz,x,y,z,tt[ti+1],iso);
-          const v2=_mcEdgeVtx(vol,volW,volH,psx,psz,x,y,z,tt[ti+2],iso);
+          const v0=_mcEdgeVtx(vol,cW,cH,psx,psz,x,y,z,tt[ti],iso);
+          const v1=_mcEdgeVtx(vol,cW,cH,psx,psz,x,y,z,tt[ti+1],iso);
+          const v2=_mcEdgeVtx(vol,cW,cH,psx,psz,x,y,z,tt[ti+2],iso);
           const ax=v1[0]-v0[0],ay=v1[1]-v0[1],az=v1[2]-v0[2];
           const bx=v2[0]-v0[0],by=v2[1]-v0[1],bz=v2[2]-v0[2];
-          const nx=ay*bz-az*by,ny=az*bx-ax*bz,nz2=ax*by-ay*bx;
+          const nx=ay*bz-az*by, ny=az*bx-ax*bz, nz2=ax*by-ay*bx;
           const nl=Math.sqrt(nx*nx+ny*ny+nz2*nz2)||1;
-          tris.push([nx/nl,ny/nl,nz2/nl,v0,v1,v2]);
+          tris.push([[nx/nl,ny/nl,nz2/nl], v0, v1, v2]);
         }
       }
     }
@@ -2002,6 +2616,8 @@ async function runMC3D(){
   $('btnMC3D').disabled=false;
   $('btnSTL3D').disabled=false; $('btnSTL3D').style.opacity='1';
   $('btnOBJ3D').disabled=false; $('btnOBJ3D').style.opacity='1';
+  $('btnPreview3D').disabled=false; $('btnPreview3D').style.opacity='1';
+  _meshVAO=null; // force GPU re-upload on next preview
   setStatus(`MC: ${tris.length.toLocaleString()} tris`,'ok');
   toast(`Malla lista: ${tris.length.toLocaleString()} triángulos`,'cyan');
 }
@@ -2019,18 +2635,34 @@ function downloadSTL3D(){
 
 function downloadOBJ3D(){
   if(!_mcTriangles||!_mcTriangles.length){ toast('Calcula la malla primero','err'); return; }
-  const tris=_mcTriangles, iso=$('isoS3D').value;
 
-  // Build deduplicated vertex + normal lists
+  // Validate triangle format: each entry must be [Array(3), Array(3), Array(3), Array(3)]
+  // If the first element of the first triangle is a number (old format), force recalc
+  const first=_mcTriangles[0];
+  if(!Array.isArray(first[0])){
+    _mcTriangles=null; _mcSTLBuffer=null;
+    $('btnSTL3D').disabled=true; $('btnSTL3D').style.opacity='.35';
+    $('btnOBJ3D').disabled=true; $('btnOBJ3D').style.opacity='.35';
+    toast('Recalcula la malla (formato actualizado)','err');
+    return;
+  }
+
+  const tris=_mcTriangles, iso=$('isoS3D').value;
   const vtxMap=new Map(), nrmMap=new Map(), vtxList=[], nrmList=[], faces=[];
+
   const vk=v=>`${v[0].toFixed(3)},${v[1].toFixed(3)},${v[2].toFixed(3)}`;
   const nk=n=>`${n[0].toFixed(4)},${n[1].toFixed(4)},${n[2].toFixed(4)}`;
   const gv=v=>{ const k=vk(v); if(vtxMap.has(k)) return vtxMap.get(k); const i=vtxList.length+1; vtxList.push(v); vtxMap.set(k,i); return i; };
   const gn=n=>{ const k=nk(n); if(nrmMap.has(k)) return nrmMap.get(k); const i=nrmList.length+1; nrmList.push(n); nrmMap.set(k,i); return i; };
-  for(const[fn,v0,v1,v2] of tris){
+
+  for(const tri of tris){
+    const fn=tri[0], v0=tri[1], v1=tri[2], v2=tri[3];
+    if(!fn||!v0||!v1||!v2) continue;
     const ni=gn(fn);
-    faces.push([gv(v0),ni,gv(v1),ni,gv(v2),ni]);
+    faces.push([gv(v0),ni, gv(v1),ni, gv(v2),ni]);
   }
+
+  if(!faces.length){ toast('Malla vacía — recalcula con otro isovalue','err'); return; }
 
   const mtlName=`medvis_iso${iso}.mtl`;
   const lines=[
@@ -2048,26 +2680,184 @@ function downloadOBJ3D(){
   const objStr=lines.join('\n');
   const mtlStr=`# MedVis Studio MTL\nnewmtl MedicalSurface\nKa 0.15 0.15 0.15\nKd 0.85 0.80 0.75\nKs 0.30 0.30 0.30\nNs 50.0\nd 1.0\nillum 2\n`;
 
-  // Helper: trigger download by appending to body (bypasses popup blocker)
   function triggerDownload(content, filename, mime){
     const blob=new Blob([content],{type:mime});
     const url=URL.createObjectURL(blob);
     const a=document.createElement('a');
     a.href=url; a.download=filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
     setTimeout(()=>URL.revokeObjectURL(url), 1000);
   }
 
   triggerDownload(objStr, `medvis_iso${iso}.obj`, 'text/plain');
-  // Slight delay so browser doesn't merge both downloads
   setTimeout(()=>triggerDownload(mtlStr, mtlName, 'text/plain'), 500);
 
   const mb=(new TextEncoder().encode(objStr).length/1048576).toFixed(2);
   toast(`OBJ (${mb} MB) + MTL descargados`,'cyan');
-  log(`↓ OBJ: ${vtxList.length.toLocaleString()} vértices, ${faces.length.toLocaleString()} caras, ${mb} MB`);
 }
+
+// ─── COMPARADOR 2x2 ───────────────────────────────────────────────────────────
+const _comp = {
+  panels: [
+    {uid:null, slice:0, ww:400, wc:40},
+    {uid:null, slice:0, ww:400, wc:40},
+    {uid:null, slice:0, ww:400, wc:40},
+    {uid:null, slice:0, ww:400, wc:40},
+  ],
+  syncWL: false,
+  syncSlice: false,
+};
+
+function initComp(){
+  // Populate series selectors
+  const uids = Object.keys(S.series);
+  for(let i=0;i<4;i++){
+    const sel=$('csel'+i); if(!sel) continue;
+    const prev=sel.value;
+    sel.innerHTML='<option value="">— serie —</option>';
+    uids.forEach(uid=>{
+      const m=S.series[uid].metadata;
+      const opt=document.createElement('option');
+      opt.value=uid;
+      opt.textContent=`${m.modality} · ${m.seriesDesc.slice(0,22)}`;
+      sel.appendChild(opt);
+    });
+    // Auto-assign: panel 0 = active series, others = next series in order
+    if(!_comp.panels[i].uid && uids[i]){
+      _comp.panels[i].uid=uids[i];
+      sel.value=uids[i];
+      _compInitPanel(i);
+    } else if(_comp.panels[i].uid){
+      sel.value=_comp.panels[i].uid;
+    }
+  }
+}
+
+function _compInitPanel(i){
+  const p=_comp.panels[i];
+  const sr=p.uid?S.series[p.uid]:null;
+  if(!sr){ $('cscount'+i).textContent='0/0'; $('cinfo'+i).textContent=''; return; }
+  const total=sr.instances.length;
+  p.slice=Math.floor(total/2);
+  p.ww=S.ww; p.wc=S.wc;
+  const sl=$('cslice'+i);
+  if(sl){ sl.max=Math.max(0,total-1); sl.value=p.slice; }
+  $('cscount'+i).textContent=`${p.slice+1}/${total}`;
+  _compRenderPanel(i);
+}
+
+// Generic paint function — works on any canvas with any ww/wc
+function _paintComp(canvas, inst, ww, wc, inverted=false){
+  const pane=canvas.parentElement;
+  const cw=Math.max(1, pane.clientWidth||256);
+  const ch=Math.max(1, (pane.clientHeight||256)-26); // subtract bar height
+  const cols=Math.max(1,inst.cols|0), rows=Math.max(1,inst.rows|0);
+  canvas.width=cols; canvas.height=rows;
+  canvas.style.width=cw+'px'; canvas.style.height=ch+'px';
+  const ctx=canvas.getContext('2d');
+  const imgD=ctx.createImageData(cols,rows);
+  const lo=wc-ww/2, rng=ww||1;
+  for(let i=0;i<cols*rows;i++){
+    let v=Math.round(((inst.hu[i]-lo)/rng)*255);
+    v=Math.max(0,Math.min(255,v));
+    if(inverted) v=255-v;
+    imgD.data[i*4]=v; imgD.data[i*4+1]=v; imgD.data[i*4+2]=v; imgD.data[i*4+3]=255;
+  }
+  ctx.putImageData(imgD,0,0);
+}
+
+async function _compRenderPanel(i){
+  const p=_comp.panels[i]; if(!p.uid) return;
+  const sr=S.series[p.uid]; if(!sr) return;
+  const idx=Math.max(0,Math.min(sr.instances.length-1,p.slice));
+  try{
+    const inst=await decode(sr.instances[idx]);
+    // Auto W/L on first render of this panel
+    if(!sr._compWLSet){
+      sr._compWLSet=true;
+      const step=Math.max(1,Math.floor(inst.hu.length/20000));
+      const vals=[];
+      for(let j=0;j<inst.hu.length;j+=step) if(isFinite(inst.hu[j])) vals.push(inst.hu[j]);
+      vals.sort((a,b)=>a-b);
+      p.ww=Math.max(1,Math.round((vals[Math.floor(vals.length*.98)]??inst.maxHU)-(vals[Math.floor(vals.length*.02)]??inst.minHU)));
+      p.wc=Math.round((vals[Math.floor(vals.length*.02)]??inst.minHU)+p.ww/2);
+    }
+    const canvas=$('ccanvas'+i);
+    _paintComp(canvas, inst, p.ww, p.wc);
+    const m=sr.metadata;
+    $('cinfo'+i).innerHTML=`${m.modality}<br>${m.rows}x${m.cols}<br>${idx+1}/${sr.instances.length}`;
+    $('cscount'+i).textContent=`${idx+1}/${sr.instances.length}`;
+  } catch(e){ console.error('[comp]',e); }
+}
+
+function compSetSeries(i, uid){
+  _comp.panels[i].uid=uid||null;
+  if(uid){ _compInitPanel(i); }
+  else { const c=$('ccanvas'+i); if(c){const ctx=c.getContext('2d');ctx.clearRect(0,0,c.width,c.height);} $('cinfo'+i).textContent=''; }
+}
+
+function compGoSlice(i, idx){
+  const p=_comp.panels[i]; if(!p.uid) return;
+  const sr=S.series[p.uid]; if(!sr) return;
+  p.slice=Math.max(0,Math.min(sr.instances.length-1,idx));
+  $('cscount'+i).textContent=`${p.slice+1}/${sr.instances.length}`;
+  if(_comp.syncSlice){
+    // Sync all panels to same slice index (clamped to their own max)
+    for(let j=0;j<4;j++){
+      if(j===i) continue;
+      const pj=_comp.panels[j]; if(!pj.uid) continue;
+      const srj=S.series[pj.uid]; if(!srj) continue;
+      pj.slice=Math.min(idx, srj.instances.length-1);
+      const sl=$('cslice'+j); if(sl) sl.value=pj.slice;
+      $('cscount'+j).textContent=`${pj.slice+1}/${srj.instances.length}`;
+    }
+    for(let j=0;j<4;j++) if(j!==i && _comp.panels[j].uid) _compRenderPanel(j);
+  }
+  _compRenderPanel(i);
+}
+
+function compToggleSync(){
+  _comp.syncWL=$('compSyncWL')?.checked||false;
+  _comp.syncSlice=$('compSyncSlice')?.checked||false;
+}
+
+// W/L drag on comparator panels
+(function _attachCompMouse(){
+  window.addEventListener('load',()=>{
+    for(let i=0;i<4;i++){
+      (function(idx){
+        let dragging=false, sx=0, sy=0, ww0=400, wc0=40;
+        const cv=$('ccanvas'+idx); if(!cv) return;
+        cv.addEventListener('mousedown',e=>{
+          if(e.button!==0) return;
+          e.preventDefault();
+          dragging=true; sx=e.clientX; sy=e.clientY;
+          ww0=_comp.panels[idx].ww; wc0=_comp.panels[idx].wc;
+        });
+        window.addEventListener('mouseup',()=>dragging=false);
+        window.addEventListener('mousemove',e=>{
+          if(!dragging) return;
+          const p=_comp.panels[idx];
+          p.ww=Math.max(1,ww0+(e.clientX-sx)*3);
+          p.wc=wc0+(e.clientY-sy)*2;
+          if(_comp.syncWL){
+            for(let j=0;j<4;j++){ _comp.panels[j].ww=p.ww; _comp.panels[j].wc=p.wc; }
+            for(let j=0;j<4;j++) if(_comp.panels[j].uid) _compRenderPanel(j);
+          } else {
+            _compRenderPanel(idx);
+          }
+        });
+        cv.addEventListener('wheel',e=>{
+          e.preventDefault();
+          const p=_comp.panels[idx];
+          p.slice=Math.max(0,Math.min((S.series[p.uid]?.instances.length||1)-1, p.slice+(e.deltaY>0?1:-1)));
+          const sl=$('cslice'+idx); if(sl) sl.value=p.slice;
+          compGoSlice(idx, p.slice);
+        },{passive:false});
+      })(i);
+    }
+  });
+})();
 
 // ─── EXPORT ─────────────────────────────────────────────────────────────────────
 function exportPNG(){
@@ -2145,7 +2935,7 @@ setStatus('Ready — carga una carpeta DICOM para comenzar','ok');
         <div style="font-family:var(--mono);font-size:11px;color:var(--t1)">Versión <span style="color:var(--cyan)">2.0</span> &nbsp;&middot;&nbsp; HTML5 · dicom-parser · Three.js</div>
         <div style="font-family:var(--mono);font-size:10px;color:var(--t1);line-height:1.7;margin-top:4px">
           Visor DICOM local de uso clínico-educativo. Soporta CT, MRI, CR, DX y US.<br>
-          Renderizado 2D, MPR y volumétrico 3D. Versión RC10.
+          Renderizado 2D, MPR y volumétrico 3D. v.RC1.
         </div>
       </div>
       <!-- Divider -->
@@ -2165,7 +2955,7 @@ setStatus('Ready — carga una carpeta DICOM para comenzar','ok');
       <div style="height:1px;background:var(--b0)"></div>
       <!-- Acknowledgements -->
       <div style="display:flex;flex-direction:column;gap:10px">
-        <div style="font-family:var(--mono);font-size:9px;color:var(--t2);letter-spacing:.15em;text-transform:uppercase;margin-bottom:4px">Revisión</div>
+        <div style="font-family:var(--mono);font-size:9px;color:var(--t2);letter-spacing:.15em;text-transform:uppercase;margin-bottom:4px">Validación</div>
         <div style="display:flex;align-items:flex-start;gap:12px;padding:10px 12px;background:var(--bg3);border-radius:4px;border:1px solid var(--b0)">
           <div style="width:32px;height:32px;background:rgba(255,0,119,.08);border:1px solid var(--mag);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0">&#129657;</div>
           <div>
