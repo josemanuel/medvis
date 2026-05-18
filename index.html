@@ -61,7 +61,7 @@ body{background:var(--bg0);color:var(--t0);font-family:var(--sans);height:100vh;
 .vcontent{flex:1;position:relative;overflow:hidden}
 #v2d{position:absolute;inset:0;display:flex;flex-direction:column}
 .canvaswrap{flex:1;position:relative;overflow:hidden;background:#000}
-#dicomCanvas{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;cursor:crosshair;image-rendering:pixelated;background:#000}
+#dicomCanvas{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;cursor:crosshair;background:#000}
 #measureSVG{position:absolute;inset:0;z-index:11;pointer-events:none;width:100%;height:100%}
 .overlay{position:absolute;inset:0;pointer-events:none;z-index:12}
 .otl,.otr,.obl,.obr{position:absolute;font-family:var(--mono);font-size:10px;line-height:1.75;padding:7px;color:rgba(0,255,200,.85);text-shadow:0 1px 3px rgba(0,0,0,.95)}
@@ -87,9 +87,9 @@ input[type=range].rng.amb::-webkit-slider-thumb{background:var(--amb);box-shadow
 .v3dbtn{font-family:var(--mono);font-size:10px;padding:3px 9px;border:1px solid var(--b1);background:transparent;color:var(--t0);border-radius:2px;cursor:pointer;transition:all .15s}
 .v3dbtn:hover,.v3dbtn.active{border-color:var(--cyan);color:var(--cyan);background:rgba(0,212,255,.08)}
 .mpr-grid{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:2px;background:var(--b0);position:absolute;inset:0}
-.comp-grid{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:2px;background:var(--b0);position:absolute;inset:0}
-.cpane{background:#000;position:relative;overflow:hidden;display:flex;flex-direction:column}
-.cpane canvas{flex:1;width:100%;display:block;image-rendering:pixelated;cursor:crosshair}
+.comp-grid{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:2px;background:var(--b0);flex:1;overflow:hidden;min-height:0}
+.cpane{background:#000;overflow:hidden;display:flex;flex-direction:column;min-height:0}
+.cpane canvas{flex:1;width:100%;min-height:0;display:block;object-fit:contain;image-rendering:auto;cursor:crosshair;background:#000}
 .cpane-bar{height:26px;background:var(--bg2);border-top:1px solid var(--b0);display:flex;align-items:center;padding:0 6px;gap:6px;flex-shrink:0}
 .cpane-bar select{background:var(--bg3);border:1px solid var(--b1);color:var(--t0);font-family:var(--mono);font-size:9px;padding:2px 4px;border-radius:2px;flex:1;cursor:pointer}
 .cpane-bar input[type=range]{flex:1;height:2px}
@@ -162,7 +162,7 @@ kbd{font-family:var(--mono);font-size:9px;background:var(--bg3);border:1px solid
 <header class="hdr">
   <div class="logo">MedVis Studio</div>
   <div class="hdiv"></div>
-  <div class="hinfo">DICOM VIEWER <span>v2.0</span></div>
+  <div class="hinfo">DICOM VIEWER <span>v7</span></div>
   <div class="hdiv"></div>
   <div class="hinfo" id="patBadge">no study loaded</div>
   <div class="hbtns">
@@ -240,10 +240,14 @@ kbd{font-family:var(--mono);font-size:9px;background:var(--bg3);border:1px solid
           <label>SLICE</label>
           <input type="range" class="rng" id="sliceR" min="0" value="0" oninput="goSlice(+this.value)">
           <span class="scnt" id="sliceCnt">0 / 0</span>
-          <label style="margin-left:8px">W</label>
-          <input type="range" class="rng" id="wwR" min="1" max="4000" value="400" style="width:70px" oninput="onWWchange(+this.value)">
+          <button id="cinebtn" class="tbtn" style="padding:2px 8px;font-size:14px;min-width:30px;height:24px" onclick="cineToggle()" title="Play/Stop (Espacio)">&#9654;</button>
+          <button class="tbtn" style="padding:2px 6px;font-size:11px;height:24px" onclick="cineSlower()" title="Más lento">&#8722;</button>
+          <span id="cineFPSlbl" style="font-family:var(--mono);font-size:9px;color:var(--t2);min-width:30px;text-align:center">10fps</span>
+          <button class="tbtn" style="padding:2px 6px;font-size:11px;height:24px" onclick="cineFaster()" title="Más rápido">+</button>
+          <label style="margin-left:6px">W</label>
+          <input type="range" class="rng" id="wwR" min="1" max="4000" value="400" style="width:65px" oninput="onWWchange(+this.value)">
           <label>L</label>
-          <input type="range" class="rng mag" id="wcR" min="-1000" max="3000" value="40" style="width:70px" oninput="onWCchange(+this.value)">
+          <input type="range" class="rng mag" id="wcR" min="-1000" max="3000" value="40" style="width:65px" oninput="onWCchange(+this.value)">
         </div>
       </div>
       <!-- 3D -->
@@ -271,7 +275,7 @@ kbd{font-family:var(--mono);font-size:9px;background:var(--bg3);border:1px solid
       </div>
       <!-- COMPARADOR 2x2 -->
       <div id="vcomp" style="position:absolute;inset:0;display:none;flex-direction:column">
-        <div style="height:28px;background:var(--bg1);border-bottom:1px solid var(--b0);display:flex;align-items:center;padding:0 10px;gap:10px;flex-shrink:0">
+        <div style="min-height:28px;background:var(--bg1);border-bottom:1px solid var(--b0);display:flex;align-items:center;flex-wrap:wrap;padding:2px 10px;gap:8px;flex-shrink:0">
           <span style="font-family:var(--mono);font-size:10px;color:var(--t2)">COMPARADOR</span>
           <label style="font-family:var(--mono);font-size:9px;color:var(--t2);display:flex;align-items:center;gap:4px;cursor:pointer">
             <input type="checkbox" id="compSyncWL" onchange="compToggleSync()" style="cursor:pointer">
@@ -281,6 +285,8 @@ kbd{font-family:var(--mono);font-size:9px;background:var(--bg3);border:1px solid
             <input type="checkbox" id="compSyncSlice" onchange="compToggleSync()" style="cursor:pointer">
             Sincronizar slice
           </label>
+          <button onclick="compSyncPlanes()" style="font-family:var(--mono);font-size:9px;background:rgba(0,212,255,.08);border:1px solid var(--cyan);color:var(--cyan);padding:2px 9px;border-radius:3px;cursor:pointer;transition:all .15s" title="Detecta series del mismo plano y sincroniza su navegación automáticamente">&#8644; Sincronizar plano</button>
+          <span id="compPlaneInfo" style="font-family:var(--mono);font-size:9px;color:var(--t2)"></span>
         </div>
         <div class="comp-grid" id="compGrid">
           <div class="cpane" id="cpane0">
@@ -485,6 +491,7 @@ const S = {
   renderer3:null, scene3:null, cam3:null,
   rot3X:0, rot3Y:0, zoom3:1,
   mode3:'vol', colormap:'gray',
+  cineActive:false, cineInterval:null, cineFPS:10, cineDir:1, cineLoop:true,
   volSlices:null,
 };
 
@@ -662,6 +669,7 @@ function extractMeta(ds){
     cols:        tg(ds,'x00280011')||'?',
     pixSpc:      tg(ds,'x00280030')||'—',
     sliceThk:    tg(ds,'x00180050')||tg(ds,'x00500010')||'—',
+    frameTime:   tg(ds,'x00181066')||null,
     kvp:         tg(ds,'x00180060')||'—',
     institution: tg(ds,'x00080080')||'—',
     manufacturer:tg(ds,'x00080070')||'—',
@@ -712,6 +720,7 @@ function renderSeriesList(){
 
 // ─── LOAD SERIES ───────────────────────────────────────────────────────────────
 async function loadSeries(uid){
+  if(S.cineActive) cineToggle();
   document.querySelectorAll('.sitem').forEach(el=>el.classList.toggle('active',el.dataset.uid===uid));
   S.activeUID=uid; S.slice=0; S.annotsBySlice={}; clearSVG();
   S.mprCutX=undefined; S.mprCutY=undefined; _mprClicksAttached=false;
@@ -1175,6 +1184,7 @@ function applyTransform(){
   const c=$('dicomCanvas'), s=$('measureSVG');
   const t=`scale(${S.zoom}) translate(${S.panX/S.zoom}px,${S.panY/S.zoom}px)`;
   c.style.transform=t; s.style.transform=t;
+  c.style.imageRendering = S.zoom > 1.0 ? 'auto' : 'pixelated';
 }
 function showCoords(mx,my){
   const sr=S.series[S.activeUID]; if(!sr) return;
@@ -2706,9 +2716,12 @@ const _comp = {
   ],
   syncWL: false,
   syncSlice: false,
+  planeGroups: null,  // set by compSyncPlanes()
 };
 
 function initComp(){
+  _comp.planeGroups=null;
+  const info=$('compPlaneInfo'); if(info) info.textContent='';
   // Populate series selectors
   const uids = Object.keys(S.series);
   for(let i=0;i<4;i++){
@@ -2748,12 +2761,9 @@ function _compInitPanel(i){
 
 // Generic paint function — works on any canvas with any ww/wc
 function _paintComp(canvas, inst, ww, wc, inverted=false){
-  const pane=canvas.parentElement;
-  const cw=Math.max(1, pane.clientWidth||256);
-  const ch=Math.max(1, (pane.clientHeight||256)-26); // subtract bar height
   const cols=Math.max(1,inst.cols|0), rows=Math.max(1,inst.rows|0);
   canvas.width=cols; canvas.height=rows;
-  canvas.style.width=cw+'px'; canvas.style.height=ch+'px';
+  // CSS handles display: object-fit:contain preserves aspect ratio
   const ctx=canvas.getContext('2d');
   const imgD=ctx.createImageData(cols,rows);
   const lo=wc-ww/2, rng=ww||1;
@@ -2801,24 +2811,114 @@ function compGoSlice(i, idx){
   const sr=S.series[p.uid]; if(!sr) return;
   p.slice=Math.max(0,Math.min(sr.instances.length-1,idx));
   $('cscount'+i).textContent=`${p.slice+1}/${sr.instances.length}`;
+
+  // Determine which panels to sync with this one
+  const toSync=new Set();
+
+  // Global slice sync (checkbox)
   if(_comp.syncSlice){
-    // Sync all panels to same slice index (clamped to their own max)
-    for(let j=0;j<4;j++){
-      if(j===i) continue;
-      const pj=_comp.panels[j]; if(!pj.uid) continue;
-      const srj=S.series[pj.uid]; if(!srj) continue;
-      pj.slice=Math.min(idx, srj.instances.length-1);
-      const sl=$('cslice'+j); if(sl) sl.value=pj.slice;
-      $('cscount'+j).textContent=`${pj.slice+1}/${srj.instances.length}`;
-    }
-    for(let j=0;j<4;j++) if(j!==i && _comp.panels[j].uid) _compRenderPanel(j);
+    for(let j=0;j<4;j++) if(j!==i && _comp.panels[j].uid) toSync.add(j);
   }
+
+  // Plane-group sync (smart button)
+  if(_comp.planeGroups){
+    for(const group of _comp.planeGroups){
+      const inGroup=group.some(p=>p.i===i);
+      if(inGroup){
+        for(const member of group){
+          if(member.i!==i) toSync.add(member.i);
+        }
+      }
+    }
+  }
+
+  // Propagate to synced panels
+  for(const j of toSync){
+    const pj=_comp.panels[j]; if(!pj.uid) continue;
+    const srj=S.series[pj.uid]; if(!srj) continue;
+    // Scale slice index proportionally to the target series length
+    const scaled=Math.round(p.slice / Math.max(sr.instances.length-1,1) * Math.max(srj.instances.length-1,1));
+    pj.slice=Math.max(0,Math.min(srj.instances.length-1,scaled));
+    const sl=$('cslice'+j); if(sl) sl.value=pj.slice;
+    $('cscount'+j).textContent=`${pj.slice+1}/${srj.instances.length}`;
+    _compRenderPanel(j);
+  }
+
   _compRenderPanel(i);
 }
 
 function compToggleSync(){
   _comp.syncWL=$('compSyncWL')?.checked||false;
   _comp.syncSlice=$('compSyncSlice')?.checked||false;
+}
+
+// ── Plane detection ──────────────────────────────────────────────────────────
+// Returns the dominant normal vector [x,y,z] of a series from ImageOrientationPatient
+function _seriesNormal(uid){
+  const sr=S.series[uid]; if(!sr) return null;
+  const ds=sr.instances[0]?.ds; if(!ds) return null;
+  const iopStr=(ds.string?.('x00200037')||'').trim();
+  if(!iopStr) return null;
+  const iop=iopStr.split('\\').map(Number);
+  if(iop.length<6||iop.some(isNaN)) return null;
+  const rx=iop[0],ry=iop[1],rz=iop[2];
+  const cx=iop[3],cy=iop[4],cz=iop[5];
+  // Normal = row × col
+  return [ry*cz-rz*cy, rz*cx-rx*cz, rx*cy-ry*cx];
+}
+
+function _normalDot(a,b){
+  const la=Math.sqrt(a[0]*a[0]+a[1]*a[1]+a[2]*a[2])||1;
+  const lb=Math.sqrt(b[0]*b[0]+b[1]*b[1]+b[2]*b[2])||1;
+  return Math.abs(a[0]*b[0]/la/lb + a[1]*b[1]/la/lb + a[2]*b[2]/la/lb);
+}
+
+function compSyncPlanes(){
+  // Find which panels have series assigned
+  const active=[];
+  for(let i=0;i<4;i++){
+    const uid=_comp.panels[i].uid;
+    if(!uid) continue;
+    const n=_seriesNormal(uid);
+    active.push({i, uid, normal:n});
+  }
+  if(active.length<2){
+    toast('Carga al menos 2 series en el comparador','err'); return;
+  }
+
+  // Group panels by compatible plane (dot product > 0.95 = same plane)
+  const groups=[];
+  const assigned=new Set();
+  for(let a=0;a<active.length;a++){
+    if(assigned.has(a)) continue;
+    const group=[active[a]];
+    assigned.add(a);
+    for(let b=a+1;b<active.length;b++){
+      if(assigned.has(b)) continue;
+      const nA=active[a].normal, nB=active[b].normal;
+      const compatible = nA && nB && _normalDot(nA,nB)>0.95;
+      if(compatible){ group.push(active[b]); assigned.add(b); }
+    }
+    groups.push(group);
+  }
+
+  // For each group with >=2 panels: enable slice sync between them
+  // Store in _comp.planeGroups for use in compGoSlice
+  _comp.planeGroups=groups;
+
+  // Report
+  const synced=groups.filter(g=>g.length>1);
+  const info=$('compPlaneInfo');
+  if(!synced.length){
+    if(info) info.textContent='Sin planos compatibles detectados';
+    toast('No se encontraron series del mismo plano','err');
+    return;
+  }
+
+  const labels=['A','B','C','D'];
+  const desc=synced.map(g=>'['+g.map(p=>labels[p.i]).join('+')+']').join(' ');
+  if(info) info.textContent=`Sincronizados: ${desc}`;
+  toast(`Planos sincronizados: ${desc}`,'cyan');
 }
 
 // W/L drag on comparator panels
@@ -2859,6 +2959,52 @@ function compToggleSync(){
   });
 })();
 
+// ─── CINE ─────────────────────────────────────────────────────────────────────
+function cineToggle(){
+  const sr=S.series[S.activeUID];
+  if(S.cineActive){
+    clearInterval(S.cineInterval); S.cineInterval=null; S.cineActive=false;
+    const btn=$('cinebtn'); if(btn){ btn.innerHTML='&#9654;'; btn.classList.remove('active'); }
+    setStatus('Ready','ok');
+    return;
+  }
+  if(!sr||sr.instances.length<2){ toast('Se necesitan >=2 imágenes para Cine','err'); return; }
+  // Read frame time from DICOM if available
+  const ft=parseFloat(sr.metadata.frameTime||'0');
+  if(ft>0) S.cineFPS=Math.min(60,Math.max(1,Math.round(1000/ft)));
+  S.cineActive=true; S.cineDir=1;
+  const btn=$('cinebtn'); if(btn){ btn.innerHTML='&#9646;&#9646;'; btn.classList.add('active'); }
+  $('cineFPSlbl').textContent=S.cineFPS+'fps';
+  setStatus(`Cine · ${S.cineFPS} fps`,'ok');
+  S.cineInterval=setInterval(()=>{
+    const sr2=S.series[S.activeUID]; if(!sr2){ cineToggle(); return; }
+    const total=sr2.instances.length;
+    let next=S.slice+S.cineDir;
+    if(S.cineLoop){
+      if(next>=total) next=0;
+      if(next<0) next=total-1;
+    } else {
+      // Ping-pong
+      if(next>=total){ S.cineDir=-1; next=total-2; }
+      if(next<0){      S.cineDir= 1; next=1; }
+    }
+    goSlice(next);
+  }, Math.round(1000/S.cineFPS));
+}
+
+function cineFaster(){
+  S.cineFPS=Math.min(60,S.cineFPS+5);
+  $('cineFPSlbl').textContent=S.cineFPS+'fps';
+  if(S.cineActive){ cineToggle(); cineToggle(); }
+  toast(S.cineFPS+' fps','cyan');
+}
+function cineSlower(){
+  S.cineFPS=Math.max(1,S.cineFPS-5);
+  $('cineFPSlbl').textContent=S.cineFPS+'fps';
+  if(S.cineActive){ cineToggle(); cineToggle(); }
+  toast(S.cineFPS+' fps','cyan');
+}
+
 // ─── EXPORT ─────────────────────────────────────────────────────────────────────
 function exportPNG(){
   const c=$('dicomCanvas'); if(!c.width){ toast('No hay imagen cargada','err'); return; }
@@ -2867,6 +3013,10 @@ function exportPNG(){
 }
 function resetView(){
   S.zoom=1; S.panX=0; S.panY=0; S.inverted=false; $('tlinv').classList.remove('active'); applyTransform(); repaint(); reset3DCam();
+  // Reset comparator panels to auto W/L
+  if($('vcomp')?.style.display==='flex'){
+    for(let i=0;i<4;i++){ const p=_comp.panels[i]; if(p.uid) { const sr=S.series[p.uid]; if(sr) sr._compWLSet=false; _compInitPanel(i); } }
+  }
   toast('Vista reseteada');
 }
 
@@ -2880,8 +3030,8 @@ document.addEventListener('keydown',e=>{
     case 'l': setTool('len'); break;
     case 'i': toggleInvert(); break;
     case 'r': resetView(); break;
+    case ' ': e.preventDefault(); cineToggle(); break;
     case 'escape': clearAnnotations(); break;
-    case 'c': if(e.shiftKey){ clearAnnotations(true); toast('Todas las medidas eliminadas'); } break;  // clear current slice
     case 'c': if(e.shiftKey){ clearAnnotations(true); toast('Todas las medidas eliminadas'); } break;
     case 'arrowleft': case 'arrowup': e.preventDefault(); goSlice(S.slice-1); break;
     case 'arrowright': case 'arrowdown': e.preventDefault(); goSlice(S.slice+1); break;
@@ -2932,10 +3082,10 @@ setStatus('Ready — carga una carpeta DICOM para comenzar','ok');
       <div style="display:flex;flex-direction:column;gap:6px">
         <div style="font-family:var(--mono);font-size:9px;color:var(--t2);letter-spacing:.15em;text-transform:uppercase;margin-bottom:4px">Aplicación</div>
         <div style="font-size:14px;font-weight:600;color:var(--t0)">DICOM Viewer — MedVis Studio</div>
-        <div style="font-family:var(--mono);font-size:11px;color:var(--t1)">Versión <span style="color:var(--cyan)">2.0</span> &nbsp;&middot;&nbsp; HTML5 · dicom-parser · Three.js</div>
+        <div style="font-family:var(--mono);font-size:11px;color:var(--t1)">Versión <span style="color:var(--cyan)">7.0</span> &nbsp;&middot;&nbsp; HTML5 · dicom-parser · WebGL2</div>
         <div style="font-family:var(--mono);font-size:10px;color:var(--t1);line-height:1.7;margin-top:4px">
           Visor DICOM local de uso clínico-educativo. Soporta CT, MRI, CR, DX y US.<br>
-          Renderizado 2D, MPR y volumétrico 3D. v.RC1.
+          Renderizado 2D, MPR y volumétrico 3D. Sin servidor. Sin envío de datos.
         </div>
       </div>
       <!-- Divider -->
