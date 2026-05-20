@@ -6,6 +6,7 @@
 <title>MedVis Studio — DICOM Viewer</title>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/dicom-parser@1.8.21/dist/dicomParser.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <style>
 :root{
   --bg0:#060a0e;--bg1:#0d1117;--bg2:#111827;--bg3:#1a2332;--bgh:#1e2d3d;
@@ -167,9 +168,11 @@ kbd{font-family:var(--mono);font-size:9px;background:var(--bg3);border:1px solid
   <div class="hinfo" id="patBadge">no study loaded</div>
   <div class="hbtns">
     <button class="hbtn" onclick="exportPNG()">&#8595; PNG</button>
+    <button class="hbtn" onclick="exportZIP()">&#8595; ZIP</button>
     <button class="hbtn" onclick="resetView()">&#8635; Reset</button>
     <button class="hbtn" onclick="showKeys()">Keys</button>
     <button class="hbtn" id="btn3DNav" onclick="show3DNav()" style="display:none">3D Nav</button>
+    <button class="hbtn" onclick="showDisplay()">Display</button>
     <button class="hbtn" onclick="showAbout()">Acerca de&hellip;</button>
   </div>
 </header>
@@ -227,6 +230,7 @@ kbd{font-family:var(--mono);font-size:9px;background:var(--bg3);border:1px solid
       <div id="v2d">
         <div class="canvaswrap" id="canvaswrap">
           <canvas id="dicomCanvas"></canvas>
+          <canvas id="overlay6000" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:10;image-rendering:pixelated"></canvas>
           <svg id="measureSVG" xmlns="http://www.w3.org/2000/svg"></svg>
           <div class="overlay">
             <div class="otl" id="oTL"></div>
@@ -349,6 +353,14 @@ kbd{font-family:var(--mono);font-size:9px;background:var(--bg3);border:1px solid
         <input type="range" class="rng" id="wwS" min="1" max="4000" value="400" oninput="onWWchange(+this.value)" style="width:100%;margin-bottom:8px">
         <div class="clabel">Center <span class="cval" id="wcVal">40</span></div>
         <input type="range" class="rng mag" id="wcS" min="-1000" max="3000" value="40" oninput="onWCchange(+this.value)" style="width:100%;margin-bottom:8px">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
+          <span style="font-family:var(--mono);font-size:10px;color:var(--t1)">LUT</span>
+          <select id="lutSel" onchange="setLUT(this.value)" style="flex:1;background:var(--bg3);border:1px solid var(--b1);color:var(--t0);font-family:var(--mono);font-size:10px;padding:3px 5px;border-radius:3px;cursor:pointer">
+            <option value="linear">Linear</option>
+            <option value="sigmoid">Sigmoid</option>
+            <option value="log">Log</option>
+          </select>
+        </div>
         <div class="pgrid">
           <button class="pbtn" onclick="preset('brain')">Brain</button>
           <button class="pbtn" onclick="preset('lung')">Lung</button>
@@ -369,6 +381,9 @@ kbd{font-family:var(--mono);font-size:9px;background:var(--bg3);border:1px solid
           <button class="tbtn" onclick="setTool('roi')"  id="tlroi"><span class="ti">&#11835;</span>ROI</button>
           <button class="tbtn" onclick="clearAnnotations()" ondblclick="clearAnnotations(true)" title="Click: limpiar slice actual · Doble clic: limpiar todo"><span class="ti">&#10005;</span>Clear</button>
           <button class="tbtn" onclick="toggleInvert()" id="tlinv"><span class="ti">&#9681;</span>Invert</button>
+          <button class="tbtn" onclick="rotateView(90)" title="Rotar 90° (R)"><span class="ti">&#8635;</span>Rot 90°</button>
+          <button class="tbtn" onclick="flipView('H')" id="tlflipH"><span class="ti">&#8596;</span>Flip H</button>
+          <button class="tbtn" onclick="flipView('V')" id="tlflipV"><span class="ti">&#8597;</span>Flip V</button>
         </div>
       </div>
       <div class="cgrp" id="ctrl3d" style="display:none">
@@ -453,6 +468,24 @@ kbd{font-family:var(--mono);font-size:9px;background:var(--bg3);border:1px solid
         <div class="ptitle">Measurements</div>
         <div id="measPanel"><div style="font-family:var(--mono);font-size:11px;color:var(--t1)">No measurements</div></div>
       </div>
+      <div class="cgrp" id="aiGrp" style="display:none">
+        <div class="ptitle" style="display:flex;align-items:center;justify-content:space-between">
+          <span>An&#225;lisis IA</span>
+          <button onclick="exportAILog()" style="font-family:var(--mono);font-size:9px;background:transparent;border:1px solid var(--b1);color:var(--t2);padding:1px 6px;border-radius:2px;cursor:pointer" title="Exportar log">&#8595; Log</button>
+        </div>
+        <button id="aibtn" onclick="analyzeWithAI()"
+          style="width:100%;margin-bottom:8px;background:rgba(0,212,255,.07);border:1px solid var(--cyan);color:var(--cyan);font-family:var(--mono);font-size:11px;padding:8px;border-radius:3px;cursor:pointer;transition:all .2s;display:flex;align-items:center;justify-content:center;gap:6px">
+          <span style="font-size:14px">&#129504;</span> Analizar con IA
+        </button>
+        <div style="font-family:var(--mono);font-size:9px;color:var(--t2);line-height:1.5;margin-bottom:6px;padding:4px 6px;background:rgba(255,170,0,.05);border:1px solid rgba(255,170,0,.15);border-radius:2px">
+          &#9888; An&#225;lisis orientativo. No constituye diagn&#243;stico m&#233;dico.
+        </div>
+        <div id="aiPanel" style="display:none;flex-direction:column;gap:6px">
+          <div id="aiMeta" style="font-family:var(--mono);font-size:9px;color:var(--t2);margin-bottom:4px"></div>
+          <div id="aiContent" style="font-family:var(--sans);font-size:11px;color:var(--t0);line-height:1.65;max-height:320px;overflow-y:auto;white-space:pre-wrap;border:1px solid var(--b0);border-radius:3px;padding:8px;background:var(--bg3)"></div>
+        </div>
+      </div>
+
       <div class="cgrp">
         <div class="ptitle">DICOM Metadata</div>
         <div class="mgrid" id="metaGrid"><div style="font-family:var(--mono);font-size:11px;color:var(--t1)">No image loaded</div></div>
@@ -483,8 +516,8 @@ kbd{font-family:var(--mono);font-size:9px;background:var(--bg3);border:1px solid
 const S = {
   series:{}, activeUID:null, slice:0,
   annotsBySlice:{},
-  ww:400, wc:40, tool:'wl', inverted:false,
-  zoom:1, panX:0, panY:0,
+  ww:400, wc:40, tool:'wl', inverted:false, lutShape:'linear',  // 'linear'|'sigmoid'|'log'
+  zoom:1, panX:0, panY:0, rotation:0, flipH:false, flipV:false,
   dragging:false, dragBtn:0, dragSX:0, dragSY:0,
   dragWW:400, dragWC:40, dragPX:0, dragPY:0,
   annotations:[], drawing:null,
@@ -492,6 +525,8 @@ const S = {
   rot3X:0, rot3Y:0, zoom3:1,
   mode3:'vol', colormap:'gray',
   cineActive:false, cineInterval:null, cineFPS:10, cineDir:1, cineLoop:true,
+  aiLoading:false, aiResponse:null, aiHistory:[], aiPanelOpen:false,
+  calibFactor:1.0,  // mm per pixel scaling factor (default = pixelSpacing)
   volSlices:null,
 };
 
@@ -1073,8 +1108,8 @@ function paintCanvas(inst){
     const wwMin=S.wc-S.ww/2, wwR=S.ww||1;
     const total=iCols*iRows;
     for(let i=0;i<total;i++){
-      let v=Math.round(((inst.hu[i]-wwMin)/wwR)*255);
-      v=Math.max(0,Math.min(255,v));
+      let norm=Math.max(0,Math.min(1,(inst.hu[i]-wwMin)/wwR));
+      let v=_applyLUT(norm);
       if(S.inverted) v=255-v;
       imgD.data[i*4]=v; imgD.data[i*4+1]=v; imgD.data[i*4+2]=v; imgD.data[i*4+3]=255;
     }
@@ -1090,10 +1125,16 @@ function updateOverlays(inst,idx){
   const sr=S.series[S.activeUID]; if(!sr) return;
   const m=sr.metadata, total=sr.instances.length;
   const pn=(m.patientName||'').replace(/\^/g,' ');
-  $('oTL').innerHTML=`${pn}<br>${m.patientID}<br>${fmtDate(m.studyDate)}`;
+  if(_disp.anon){
+    $('oTL').innerHTML=`${fmtDate(m.studyDate)}`;
+  } else {
+    $('oTL').innerHTML=`${pn}<br>${m.patientID}<br>${fmtDate(m.studyDate)}`;
+  }
   $('oTR').innerHTML=`${m.institution}<br>${m.manufacturer}<br>${m.modality}`;
   $('oBL').innerHTML=`${inst.cols}x${inst.rows}<br>Px:${m.pixSpc}<br>Thk:${m.sliceThk}`;
-  $('oBR').innerHTML=`${idx+1}/${total}<br>${m.seriesDesc}<br>W:${S.ww} L:${S.wc}`;
+  $('oBR').innerHTML=`${idx+1}/${total}<br>${m.seriesDesc}<br>W:${Math.round(S.ww)} L:${Math.round(S.wc)}`;
+  ['TL','TR','BL','BR'].forEach(k=>{ const el=$('o'+k); if(el) el.style.visibility=_disp[k]?'visible':'hidden'; });
+  renderDicom6000Overlay(inst);
 }
 
 
@@ -1181,10 +1222,15 @@ function onWheel(e){
   }
 }
 function applyTransform(){
-  const c=$('dicomCanvas'), s=$('measureSVG');
-  const t=`scale(${S.zoom}) translate(${S.panX/S.zoom}px,${S.panY/S.zoom}px)`;
-  c.style.transform=t; s.style.transform=t;
-  c.style.imageRendering = S.zoom > 1.0 ? 'auto' : 'pixelated';
+  const cv=$('dicomCanvas'), sv=$('measureSVG');
+  const parts=[];
+  if(S.panX||S.panY) parts.push(`translate(${S.panX}px,${S.panY}px)`);
+  if(S.rotation)     parts.push(`rotate(${S.rotation}deg)`);
+  if(S.flipH||S.flipV) parts.push(`scale(${S.flipH?-1:1},${S.flipV?-1:1})`);
+  if(S.zoom!==1)     parts.push(`scale(${S.zoom})`);
+  const t=parts.length?parts.join(' '):'none';
+  cv.style.transform=t; sv.style.transform=t;
+  cv.style.imageRendering=S.zoom>1.0?'auto':'pixelated';
 }
 function showCoords(mx,my){
   const sr=S.series[S.activeUID]; if(!sr) return;
@@ -1246,7 +1292,19 @@ function finishAnnot(){
       if(n>0){
         const mean=(sum/n).toFixed(1), sd=Math.sqrt(Math.max(0,sum2/n-(sum/n)**2)).toFixed(1);
         const area=(Math.PI*rx*ry*pxSpc*pxSpc).toFixed(1);
-        result=`${mean} HU  SD:${sd}  ${area} mm²`;
+        // Collect ROI values for min/max/median
+        const roiVals=[];
+        for(let r=Math.floor(cy-ry);r<=Math.ceil(cy+ry);r++){
+          for(let col2=Math.floor(cx-rx);col2<=Math.ceil(cx+rx);col2++){
+            if(r<0||r>=inst.rows||col2<0||col2>=inst.cols) continue;
+            if(((col2-cx)/rx)**2+((r-cy)/ry)**2<=1) roiVals.push(inst.hu[r*inst.cols+col2]);
+          }
+        }
+        roiVals.sort((a,b)=>a-b);
+        const roiMin=roiVals[0].toFixed(0), roiMax=roiVals[roiVals.length-1].toFixed(0);
+        const mid=Math.floor(roiVals.length/2);
+        const median=(roiVals.length%2?roiVals[mid]:(roiVals[mid-1]+roiVals[mid])/2).toFixed(1);
+        result=`μ:${mean} σ:${sd} | min:${roiMin} max:${roiMax} med:${median} | ${area}mm²`;
       }
     }
   }
@@ -1440,6 +1498,7 @@ function switchView(mode){
   if(mode==='3d') requestAnimationFrame(()=>init3D());
   if(mode==='mpr') initMPR();
   if(mode==='comp') initComp();
+  const ag=$('aiGrp'); if(ag) ag.style.display=(mode==='2d')?'block':'none';
 }
 
 // ─── MPR ────────────────────────────────────────────────────────────────────────
@@ -2959,6 +3018,45 @@ function compSyncPlanes(){
   });
 })();
 
+// ─── LUT SHAPES ───────────────────────────────────────────────────────────────
+function setLUT(shape){
+  S.lutShape=shape;
+  const sel=$('lutSel'); if(sel) sel.value=shape;
+  repaint();
+  toast('LUT: '+shape,'cyan');
+}
+
+function _applyLUT(norm){
+  // norm: 0..1 linear normalised value → 0..255 display value
+  switch(S.lutShape){
+    case 'sigmoid': {
+      // Sigmoid centred at 0.5, steepness ~10
+      const s=1/(1+Math.exp(-10*(norm-0.5)));
+      return Math.round(s*255);
+    }
+    case 'log': {
+      // Log: compressed highlights, expanded shadows
+      return Math.round(Math.log1p(norm*Math.E-1)/Math.log1p(Math.E-1)*255);
+    }
+    default: // linear
+      return Math.round(norm*255);
+  }
+}
+
+// ─── ROTATION + FLIP ─────────────────────────────────────────────────────────
+function rotateView(deg){
+  S.rotation=(S.rotation+deg)%360;
+  applyTransform();
+  toast(`Rotación: ${S.rotation}°`);
+}
+function flipView(axis){
+  if(axis==='H') S.flipH=!S.flipH;
+  else           S.flipV=!S.flipV;
+  $('tlflipH').classList.toggle('active',S.flipH);
+  $('tlflipV').classList.toggle('active',S.flipV);
+  applyTransform();
+}
+
 // ─── CINE ─────────────────────────────────────────────────────────────────────
 function cineToggle(){
   const sr=S.series[S.activeUID];
@@ -3005,6 +3103,358 @@ function cineSlower(){
   toast(S.cineFPS+' fps','cyan');
 }
 
+// ─── MÓDULO IA — ANTHROPIC API ────────────────────────────────────────────────
+
+function captureCanvasForAI(){
+  const canvas=$('dicomCanvas');
+  const wrap=$('canvaswrap');
+  const W=Math.max(1,wrap.clientWidth), H=Math.max(1,wrap.clientHeight);
+  const out=document.createElement('canvas');
+  out.width=W; out.height=H;
+  const ctx=out.getContext('2d');
+  ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
+  // Account for current transform (zoom/pan/rotation)
+  ctx.save();
+  const t=canvas.style.transform;
+  if(t&&t!=='none'){
+    // Draw canvas centered
+    const cw=canvas.width, ch=canvas.height;
+    ctx.translate(W/2,H/2);
+    // Parse transform components
+    if(S.rotation) ctx.rotate(S.rotation*Math.PI/180);
+    if(S.flipH||S.flipV) ctx.scale(S.flipH?-1:1,S.flipV?-1:1);
+    if(S.zoom!==1) ctx.scale(S.zoom,S.zoom);
+    ctx.drawImage(canvas,-cw/2,-ch/2,cw,ch);
+  } else {
+    // Fit image into output canvas maintaining aspect ratio
+    const scaleX=W/canvas.width, scaleY=H/canvas.height;
+    const scale=Math.min(scaleX,scaleY);
+    const ox=(W-canvas.width*scale)/2, oy=(H-canvas.height*scale)/2;
+    ctx.drawImage(canvas,ox,oy,canvas.width*scale,canvas.height*scale);
+  }
+  ctx.restore();
+  // Compress: target <2MB, reduce quality if needed
+  let quality=0.88;
+  let dataURL=out.toDataURL('image/jpeg',quality);
+  while(dataURL.length>2_000_000&&quality>0.4){
+    quality-=0.1;
+    dataURL=out.toDataURL('image/jpeg',quality);
+  }
+  return dataURL.split(',')[1]; // pure base64
+}
+
+function buildClinicalPrompt(){
+  const sr=S.series[S.activeUID]; if(!sr) return '';
+  const m=sr.metadata;
+  // Collect current slice annotations — no patient data
+  const annots=S.annotsBySlice?.[S.slice]||[];
+  const annotLines=annots.length
+    ? annots.map((a,i)=>`  - ${a.type||'medida'} ${i+1}: ${a.result||'—'}`).join('\n')
+    : '  Ninguna';
+  const lutInfo=S.lutShape&&S.lutShape!=='linear'?` · LUT:${S.lutShape}`:'';
+
+  return `Eres un asistente de análisis de imagen médica. Tu análisis es ORIENTATIVO y de apoyo al radiólogo, nunca sustitutivo.
+
+## Contexto técnico
+- Modalidad: ${m.modality||'?'} · Serie: ${m.seriesDesc||'?'}
+- Región anatómica: ${m.bodyPart||'no especificada'}
+- Equipo: ${m.manufacturer||'?'}
+- Slice ${S.slice+1} de ${sr.instances.length} · W:${Math.round(S.ww)} L:${Math.round(S.wc)}${lutInfo}
+
+## Medidas activas en este slice
+${annotLines}
+
+## Instrucciones de análisis
+1. Confirma la modalidad y región anatómica visible en la imagen
+2. Evalúa la calidad técnica (ruido, artefactos, posicionamiento)
+3. Describe los hallazgos principales de forma sistemática y ordenada
+4. Señala cualquier hallazgo que merezca atención clínica especial
+5. Si hay medidas activas, coméntalas en contexto
+
+Usa terminología radiológica estándar en español. Sé conciso y preciso.
+
+⚠️ IMPORTANTE: Termina siempre con esta frase exacta:
+"⚠️ Análisis orientativo generado por IA. No constituye diagnóstico médico. Contrastar siempre con criterio clínico profesional."`;
+}
+
+async function analyzeWithAI(){
+  if(S.aiLoading) return;
+  const sr=S.series[S.activeUID];
+  if(!sr){ toast('Carga una imagen primero','err'); return; }
+  if(!sr.instances[S.slice]?.hu){ toast('Decodifica el slice actual primero','err'); return; }
+
+  S.aiLoading=true;
+  const btn=$('aibtn');
+  if(btn){ btn.disabled=true; btn.innerHTML='<span style="font-size:14px">⏳</span> Analizando…'; }
+  showLD(true,'Analizando con IA…');
+
+  try{
+    const base64=captureCanvasForAI();
+    const prompt=buildClinicalPrompt();
+
+    const res=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        model:'claude-sonnet-4-20250514',
+        max_tokens:1000,
+        messages:[{role:'user',content:[
+          {type:'image',source:{type:'base64',media_type:'image/jpeg',data:base64}},
+          {type:'text',text:prompt}
+        ]}]
+      })
+    });
+
+    if(!res.ok){
+      const err=await res.json().catch(()=>({}));
+      throw new Error(err?.error?.message||`HTTP ${res.status}`);
+    }
+    const data=await res.json();
+    const text=data.content?.find(b=>b.type==='text')?.text??'Sin respuesta';
+
+    S.aiResponse=text;
+    const entry={
+      slice:S.slice+1,
+      total:sr.instances.length,
+      seriesDesc:sr.metadata.seriesDesc,
+      modality:sr.metadata.modality,
+      ww:Math.round(S.ww), wc:Math.round(S.wc),
+      ts:new Date().toLocaleString('es-ES'),
+      response:text
+    };
+    S.aiHistory.push(entry);
+    renderAIResponse(entry);
+    toast('Análisis completado','cyan');
+
+  } catch(e){
+    console.error('[IA]',e);
+    toast('Error IA: '+e.message,'err');
+    setStatus('Error IA','err');
+  } finally{
+    S.aiLoading=false;
+    showLD(false);
+    if(btn){ btn.disabled=false; btn.innerHTML='<span style="font-size:14px">&#129504;</span> Analizar con IA'; }
+  }
+}
+
+function renderAIResponse(entry){
+  const panel=$('aiPanel'); if(!panel) return;
+  const meta=$('aiMeta'), content=$('aiContent');
+  if(meta) meta.textContent=`${entry.modality} · ${entry.seriesDesc} · Slice ${entry.slice}/${entry.total} · ${entry.ts}`;
+  if(content) content.textContent=entry.response;
+  panel.style.display='flex';
+  S.aiPanelOpen=true;
+  // Scroll panel into view
+  panel.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+
+function exportAILog(){
+  if(!S.aiHistory||!S.aiHistory.length){ toast('Sin análisis en esta sesión','err'); return; }
+  const sr=S.series[S.activeUID];
+  const lines=[
+    'MedVis Studio — Log de Análisis IA',
+    `Exportado: ${new Date().toLocaleString('es-ES')}`,
+    '='.repeat(60),
+    ''
+  ];
+  S.aiHistory.forEach((e,i)=>{
+    lines.push(`ANÁLISIS ${i+1}`);
+    lines.push(`Serie: ${e.seriesDesc} · Modalidad: ${e.modality}`);
+    lines.push(`Slice: ${e.slice}/${e.total} · W:${e.ww} L:${e.wc} · ${e.ts}`);
+    lines.push('-'.repeat(40));
+    lines.push(e.response);
+    lines.push('');
+  });
+  lines.push('⚠ Análisis orientativo generado por IA. No constituye diagnóstico médico.');
+
+  const blob=new Blob([lines.join('\n')],{type:'text/plain;charset=utf-8'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=`medvis-ia-log-${new Date().toISOString().slice(0,10)}.txt`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+  toast('Log exportado','cyan');
+}
+
+// ─── SESIÓN D — FEATURES AVANZADAS ────────────────────────────────────────────
+
+// ── D1: Display Panel ─────────────────────────────────────────────────────────
+const _disp={TL:true,TR:true,BL:true,BR:true,overlay6k:true,annot:true,anon:false};
+
+function showDisplay(){ $('displayModal').style.display='flex'; }
+function closeDisplay(){ $('displayModal').style.display='none'; }
+window.addEventListener('load',()=>{
+  const dm=$('displayModal');
+  if(dm) dm.addEventListener('click',e=>{ if(e.target===dm) closeDisplay(); });
+});
+
+function toggleOverlayCorner(corner){
+  _disp[corner]=$('dispOv'+corner)?.checked??true;
+  const el=$('o'+corner); if(el) el.style.visibility=_disp[corner]?'visible':'hidden';
+}
+function toggleAnnotLayer(){
+  _disp.annot=$('dispAnnot')?.checked??true;
+  const svg=$('measureSVG'); if(svg) svg.style.display=_disp.annot?'':'none';
+}
+function toggleAnonymize(){
+  _disp.anon=$('dispAnon')?.checked||false;
+  // Re-render overlays with current slice
+  const sr=S.series[S.activeUID]; if(!sr) return;
+  const inst=sr.instances[S.slice]; if(inst?.hu) updateOverlays(inst,S.slice);
+}
+
+// ── D1: DICOM Overlay group 6000 ──────────────────────────────────────────────
+function toggleDicomOverlay(){
+  _disp.overlay6k=$('dispOverlay6000')?.checked??true;
+  const oc=$('overlay6000'); if(oc) oc.style.display=_disp.overlay6k?'':'none';
+}
+
+function renderDicom6000Overlay(inst){
+  const oc=$('overlay6000'); if(!oc||!_disp.overlay6k) return;
+  const ds=inst.ds; if(!ds) return;
+
+  // DICOM group 6000 overlays: tags x60000010 (rows), x60000011 (cols),
+  // x60000040 (type), x60000050 (origin), x60000100 (bits allocated),
+  // x60000102 (bit position), x60003000 (data)
+  // Iterate groups 6000,6002,...601E
+  let found=false;
+  for(let g=0;g<=0x1E;g+=2){
+    const grpHex=(0x6000+g).toString(16).padStart(4,'0');
+    const rowsEl=ds.elements?.['x'+grpHex+'0010'];
+    const colsEl=ds.elements?.['x'+grpHex+'0011'];
+    const dataEl=ds.elements?.['x'+grpHex+'3000'];
+    if(!dataEl) continue;
+
+    const ovRows=rowsEl?ds.uint16('x'+grpHex+'0010'):inst.rows;
+    const ovCols=colsEl?ds.uint16('x'+grpHex+'0011'):inst.cols;
+    if(!ovRows||!ovCols) continue;
+
+    // Read bit plane data
+    const bitOffset=dataEl.dataOffset, bitLen=dataEl.length;
+    const rawBuf=inst.buf;
+    if(!rawBuf||bitOffset+bitLen>rawBuf.byteLength) continue;
+    const rawBytes=new Uint8Array(rawBuf,bitOffset,bitLen);
+
+    // Render to overlay canvas
+    oc.width=ovCols; oc.height=ovRows;
+    oc.style.width='100%'; oc.style.height='100%';
+    const ctx=oc.getContext('2d');
+    const imgD=ctx.createImageData(ovCols,ovRows);
+    const total=ovRows*ovCols;
+    for(let i=0;i<total;i++){
+      const byteIdx=Math.floor(i/8), bitIdx=7-(i%8);
+      const bit=(rawBytes[byteIdx]>>bitIdx)&1;
+      if(bit){
+        imgD.data[i*4]=255;   // R: yellow overlay
+        imgD.data[i*4+1]=255; // G
+        imgD.data[i*4+2]=0;   // B
+        imgD.data[i*4+3]=200; // A
+      }
+    }
+    ctx.putImageData(imgD,0,0);
+    found=true;
+    break; // render first overlay group found
+  }
+  if(!found){
+    const ctx=oc.getContext('2d'); if(ctx) ctx.clearRect(0,0,oc.width,oc.height);
+  }
+}
+
+// Hook into renderSlice to paint overlay after decode
+const _origRenderSlice_D=window.renderSlice;
+
+// ── D2: Anonymize overlay ─────────────────────────────────────────────────────
+// updateOverlays already uses _disp.anon — patch it here
+// ── D3: Export ZIP multi-serie ────────────────────────────────────────────────
+async function exportZIP(){
+  const sr=S.series[S.activeUID]; if(!sr){ toast('Carga una serie primero','err'); return; }
+  if(typeof JSZip==='undefined'){ toast('JSZip no cargado','err'); return; }
+
+  const total=sr.instances.length;
+  showLD(true,`Exportando ${total} slices…`); showPG(true);
+
+  const zip=new JSZip();
+  const folder=zip.folder(sr.metadata.seriesDesc.replace(/[^a-zA-Z0-9_-]/g,'_')||'serie');
+
+  for(let i=0;i<total;i++){
+    try{
+      const inst=await decode(sr.instances[i]);
+      // Render slice to canvas
+      const tc=document.createElement('canvas');
+      tc.width=inst.cols; tc.height=inst.rows;
+      const ctx=tc.getContext('2d');
+      const imgD=ctx.createImageData(inst.cols,inst.rows);
+      const lo=S.wc-S.ww/2, rng=S.ww||1;
+      for(let j=0;j<inst.cols*inst.rows;j++){
+        const v=Math.max(0,Math.min(255,Math.round(_applyLUT(Math.max(0,Math.min(1,(inst.hu[j]-lo)/rng))))));
+        imgD.data[j*4]=v; imgD.data[j*4+1]=v; imgD.data[j*4+2]=v; imgD.data[j*4+3]=255;
+      }
+      ctx.putImageData(imgD,0,0);
+      // PNG to blob
+      const blob=await new Promise(res=>tc.toBlob(res,'image/png'));
+      const ab=await blob.arrayBuffer();
+      const fname=`slice_${String(i+1).padStart(4,'0')}.png`;
+      folder.file(fname,ab);
+    } catch(e){ console.warn('[ZIP] skip slice',i,e.message); }
+    if(i%5===0){ setPG(Math.round((i+1)/total*95)); $('ldtxt').textContent=`Slice ${i+1}/${total}…`; await yield_(); }
+  }
+
+  setPG(98); $('ldtxt').textContent='Generando ZIP…'; await yield_();
+  const zipBlob=await zip.generateAsync({type:'blob',compression:'DEFLATE',compressionOptions:{level:6}});
+  setPG(100);
+
+  const fname=`${sr.metadata.seriesDesc.replace(/[^a-zA-Z0-9_-]/g,'_')||'serie'}_${total}slices.zip`;
+  const url=URL.createObjectURL(zipBlob);
+  const a=document.createElement('a'); a.href=url; a.download=fname;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url),2000);
+
+  showLD(false); showPG(false);
+  toast(`ZIP (${(zipBlob.size/1048576).toFixed(1)} MB) descargado`,'cyan');
+}
+
+// ── D4: Calibración espacial manual ──────────────────────────────────────────
+function applyCalibration(){
+  // Find last Length annotation
+  const all=S.annotsBySlice?.[S.slice]||S.annotations||[];
+  const lenAnnot=[...all].reverse().find(a=>a.type==='len');
+  if(!lenAnnot){ toast('Dibuja primero una línea Length sobre el objeto de referencia','err'); return; }
+
+  const realMM=parseFloat($('calibInput')?.value);
+  if(!realMM||realMM<=0){ toast('Introduce la longitud real en mm','err'); return; }
+
+  const sr=S.series[S.activeUID]; if(!sr) return;
+  const inst=sr.instances[S.slice]; if(!inst) return;
+  const m=sr.metadata;
+
+  // Pixel length of the annotation
+  const dx=lenAnnot.ipts[1].x-lenAnnot.ipts[0].x;
+  const dy=lenAnnot.ipts[1].y-lenAnnot.ipts[0].y;
+  const pixLen=Math.sqrt(dx*dx+dy*dy);
+  if(pixLen<1){ toast('La línea es demasiado corta','err'); return; }
+
+  const newSpacing=realMM/pixLen;
+  S.calibFactor=newSpacing;
+  m.pixSpc=`${newSpacing.toFixed(4)}\\${newSpacing.toFixed(4)}`;
+
+  const info=$('calibInfo');
+  if(info) info.innerHTML=`<span style="color:var(--cyan)">Calibrado: ${newSpacing.toFixed(4)} mm/px</span><br>(${pixLen.toFixed(1)} px = ${realMM} mm)`;
+
+  // Recalculate existing length annotations with new spacing
+  let recalc=0;
+  const allAnnots=S.annotsBySlice?.[S.slice]||S.annotations||[];
+  allAnnots.forEach(a=>{
+    if(a.type==='len'&&a.ipts?.length>=2){
+      const adx=a.ipts[1].x-a.ipts[0].x, ady=a.ipts[1].y-a.ipts[0].y;
+      a.result=(Math.sqrt(adx*adx+ady*ady)*newSpacing).toFixed(2)+' mm';
+      recalc++;
+    }
+  });
+  if(recalc>0){ renderAnnotations(); updateMeasPanel(); }
+
+  toast(`Calibrado: ${newSpacing.toFixed(4)} mm/px`,'cyan');
+}
+
 // ─── EXPORT ─────────────────────────────────────────────────────────────────────
 function exportPNG(){
   const c=$('dicomCanvas'); if(!c.width){ toast('No hay imagen cargada','err'); return; }
@@ -3012,7 +3462,10 @@ function exportPNG(){
   toast('Exportado: slice-'+(S.slice+1)+'.png','cyan');
 }
 function resetView(){
-  S.zoom=1; S.panX=0; S.panY=0; S.inverted=false; $('tlinv').classList.remove('active'); applyTransform(); repaint(); reset3DCam();
+  S.zoom=1; S.panX=0; S.panY=0; S.inverted=false; S.rotation=0; S.flipH=false; S.flipV=false;
+  $('tlinv').classList.remove('active');
+  $('tlflipH')?.classList.remove('active');
+  $('tlflipV')?.classList.remove('active'); applyTransform(); repaint(); reset3DCam();
   // Reset comparator panels to auto W/L
   if($('vcomp')?.style.display==='flex'){
     for(let i=0;i<4;i++){ const p=_comp.panels[i]; if(p.uid) { const sr=S.series[p.uid]; if(sr) sr._compWLSet=false; _compInitPanel(i); } }
@@ -3030,6 +3483,8 @@ document.addEventListener('keydown',e=>{
     case 'l': setTool('len'); break;
     case 'i': toggleInvert(); break;
     case 'r': resetView(); break;
+    case 'h': flipView('H'); break;
+    case 'v': flipView('V'); break;
     case ' ': e.preventDefault(); cineToggle(); break;
     case 'escape': clearAnnotations(); break;
     case 'c': if(e.shiftKey){ clearAnnotations(true); toast('Todas las medidas eliminadas'); } break;
@@ -3064,6 +3519,59 @@ window.addEventListener('load', function(){
 window.addEventListener('resize',()=>{ const sr=S.series[S.activeUID]; if(!sr) return; const inst=sr.instances[S.slice]; if(inst?.hu){ paintCanvas(inst); renderAnnotations(); } });
 setStatus('Ready — carga una carpeta DICOM para comenzar','ok');
 </script>
+
+<!-- DISPLAY MODAL -->
+<div id="displayModal" style="display:none;position:fixed;inset:0;z-index:2000;background:rgba(6,10,14,.85);backdrop-filter:blur(6px);align-items:center;justify-content:center">
+  <div style="background:var(--bg2);border:1px solid var(--b1);border-radius:6px;max-width:420px;width:90%;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.7)">
+    <div style="background:var(--bg1);border-bottom:1px solid var(--b0);padding:12px 18px;display:flex;align-items:center;justify-content:space-between">
+      <div style="font-family:var(--mono);font-size:12px;font-weight:600;color:var(--cyan)">DISPLAY</div>
+      <button onclick="closeDisplay()" style="background:transparent;border:1px solid var(--b1);color:var(--t2);font-family:var(--mono);font-size:11px;padding:2px 9px;border-radius:3px;cursor:pointer">&#10005;</button>
+    </div>
+    <div style="padding:18px;display:flex;flex-direction:column;gap:14px">
+
+      <div>
+        <div style="font-family:var(--mono);font-size:10px;color:var(--t2);letter-spacing:.12em;text-transform:uppercase;margin-bottom:8px">Capas de overlay</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+          <label style="font-family:var(--mono);font-size:10px;color:var(--t0);display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="dispOvTL" checked onchange="toggleOverlayCorner('TL')"> Esquina TL</label>
+          <label style="font-family:var(--mono);font-size:10px;color:var(--t0);display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="dispOvTR" checked onchange="toggleOverlayCorner('TR')"> Esquina TR</label>
+          <label style="font-family:var(--mono);font-size:10px;color:var(--t0);display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="dispOvBL" checked onchange="toggleOverlayCorner('BL')"> Esquina BL</label>
+          <label style="font-family:var(--mono);font-size:10px;color:var(--t0);display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="dispOvBR" checked onchange="toggleOverlayCorner('BR')"> Esquina BR</label>
+          <label style="font-family:var(--mono);font-size:10px;color:var(--t0);display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="dispOverlay6000" checked onchange="toggleDicomOverlay()"> DICOM Overlay (6000)</label>
+          <label style="font-family:var(--mono);font-size:10px;color:var(--t0);display:flex;align-items:center;gap:6px;cursor:pointer">
+            <input type="checkbox" id="dispAnnot" checked onchange="toggleAnnotLayer()"> Medidas/Anotaciones</label>
+        </div>
+      </div>
+
+      <div style="height:1px;background:var(--b0)"></div>
+
+      <div>
+        <div style="font-family:var(--mono);font-size:10px;color:var(--t2);letter-spacing:.12em;text-transform:uppercase;margin-bottom:8px">Anonimizar overlays</div>
+        <label style="font-family:var(--mono);font-size:10px;color:var(--t0);display:flex;align-items:center;gap:6px;cursor:pointer;margin-bottom:6px">
+          <input type="checkbox" id="dispAnon" onchange="toggleAnonymize()"> Ocultar datos de paciente (TL)</label>
+        <p style="font-family:var(--mono);font-size:9px;color:var(--t2);line-height:1.5">Cuando está activo, la esquina TL muestra solo la fecha del estudio, sin nombre ni ID.</p>
+      </div>
+
+      <div style="height:1px;background:var(--b0)"></div>
+
+      <div>
+        <div style="font-family:var(--mono);font-size:10px;color:var(--t2);letter-spacing:.12em;text-transform:uppercase;margin-bottom:8px">Calibración espacial manual</div>
+        <p style="font-family:var(--mono);font-size:9px;color:var(--t2);line-height:1.5;margin-bottom:8px">Dibuja una línea Length sobre un objeto de tamaño conocido e introduce la longitud real para recalibrar.</p>
+        <div style="display:flex;align-items:center;gap:6px">
+          <label style="font-family:var(--mono);font-size:10px;color:var(--t1)">Longitud real (mm)</label>
+          <input type="number" id="calibInput" min="0.1" step="0.1" style="width:70px;background:var(--bg3);border:1px solid var(--b1);color:var(--t0);font-family:var(--mono);font-size:11px;padding:3px 6px;border-radius:3px" placeholder="mm">
+          <button onclick="applyCalibration()" style="background:rgba(0,212,255,.07);border:1px solid var(--cyan);color:var(--cyan);font-family:var(--mono);font-size:10px;padding:4px 10px;border-radius:3px;cursor:pointer">Calibrar</button>
+        </div>
+        <div id="calibInfo" style="font-family:var(--mono);font-size:9px;color:var(--t2);margin-top:4px"></div>
+      </div>
+
+    </div>
+  </div>
+</div>
 
 <!-- ABOUT MODAL -->
 <div id="aboutModal" style="display:none;position:fixed;inset:0;z-index:2000;background:rgba(6,10,14,.85);backdrop-filter:blur(6px);align-items:center;justify-content:center">
