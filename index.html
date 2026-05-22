@@ -470,20 +470,58 @@ kbd{font-family:var(--mono);font-size:9px;background:var(--bg3);border:1px solid
       </div>
       <div class="cgrp" id="aiGrp" style="display:none">
         <div class="ptitle" style="display:flex;align-items:center;justify-content:space-between">
-          <span>An&#225;lisis IA</span>
-          <button onclick="exportAILog()" style="font-family:var(--mono);font-size:9px;background:transparent;border:1px solid var(--b1);color:var(--t2);padding:1px 6px;border-radius:2px;cursor:pointer" title="Exportar log">&#8595; Log</button>
+          <span>&#129504; An&#225;lisis IA</span>
+          <div style="display:flex;gap:4px">
+            <button onclick="showAIHistory()" id="aiHistBtn" style="font-family:var(--mono);font-size:9px;background:transparent;border:1px solid var(--b1);color:var(--t2);padding:1px 6px;border-radius:2px;cursor:pointer" title="Historial de an&#225;lisis">&#128338; 0</button>
+            <button onclick="exportAILog()" style="font-family:var(--mono);font-size:9px;background:transparent;border:1px solid var(--b1);color:var(--t2);padding:1px 6px;border-radius:2px;cursor:pointer" title="Exportar log">&#8595; Log</button>
+          </div>
         </div>
+
+        <!-- Tipo de an&#225;lisis -->
+        <div style="display:flex;gap:4px;margin-bottom:6px">
+          <button class="ai-type-btn active" data-type="sistematico" onclick="setAIType('sistematico')" style="flex:1;font-family:var(--mono);font-size:9px;padding:4px 2px;border-radius:3px;cursor:pointer;border:1px solid var(--cyan);background:rgba(0,212,255,.1);color:var(--cyan)">Sistem&#225;tico</button>
+          <button class="ai-type-btn" data-type="hallazgo" onclick="setAIType('hallazgo')" style="flex:1;font-family:var(--mono);font-size:9px;padding:4px 2px;border-radius:3px;cursor:pointer;border:1px solid var(--b1);background:var(--bg3);color:var(--t1)">Hallazgo</button>
+          <button class="ai-type-btn" data-type="comparativo" onclick="setAIType('comparativo')" style="flex:1;font-family:var(--mono);font-size:9px;padding:4px 2px;border-radius:3px;cursor:pointer;border:1px solid var(--b1);background:var(--bg3);color:var(--t1)">Comparar</button>
+        </div>
+
+        <!-- Contexto cl&#237;nico -->
+        <textarea id="aiContext" placeholder="Contexto cl&#237;nico opcional&#10;Ej: Paciente 45a, sospecha de rotura meniscal, dolor medial rodilla derecha..."
+          style="width:100%;height:58px;resize:vertical;background:var(--bg3);border:1px solid var(--b1);color:var(--t0);font-family:var(--sans);font-size:10px;padding:5px 7px;border-radius:3px;margin-bottom:6px;line-height:1.5;outline:none"
+          oninput="this.style.borderColor=this.value?'var(--cyan)':'var(--b1)'"></textarea>
+
+        <!-- Bot&#243;n principal -->
         <button id="aibtn" onclick="analyzeWithAI()"
-          style="width:100%;margin-bottom:8px;background:rgba(0,212,255,.07);border:1px solid var(--cyan);color:var(--cyan);font-family:var(--mono);font-size:11px;padding:8px;border-radius:3px;cursor:pointer;transition:all .2s;display:flex;align-items:center;justify-content:center;gap:6px">
-          <span style="font-size:14px">&#129504;</span> Analizar con IA
+          style="width:100%;margin-bottom:4px;background:rgba(0,212,255,.07);border:1px solid var(--cyan);color:var(--cyan);font-family:var(--mono);font-size:11px;padding:8px;border-radius:3px;cursor:pointer;transition:all .2s;display:flex;align-items:center;justify-content:center;gap:6px">
+          <span id="aiBtnIcon" style="font-size:14px">&#129504;</span>
+          <span id="aiBtnTxt">Analizar con IA</span>
         </button>
+
+        <!-- Progreso -->
+        <div id="aiProgress" style="display:none;margin-bottom:6px">
+          <div style="height:2px;background:var(--b1);border-radius:1px;overflow:hidden">
+            <div id="aiProgressBar" style="height:100%;background:linear-gradient(90deg,var(--cyan),var(--mag));width:0%;transition:width .4s;box-shadow:0 0 4px var(--cyan)"></div>
+          </div>
+          <div id="aiProgressTxt" style="font-family:var(--mono);font-size:9px;color:var(--t2);margin-top:3px;text-align:center">Preparando imagen...</div>
+        </div>
+
+        <!-- Disclaimer -->
         <div style="font-family:var(--mono);font-size:9px;color:var(--t2);line-height:1.5;margin-bottom:6px;padding:4px 6px;background:rgba(255,170,0,.05);border:1px solid rgba(255,170,0,.15);border-radius:2px">
           &#9888; An&#225;lisis orientativo. No constituye diagn&#243;stico m&#233;dico.
         </div>
-        <div id="aiPanel" style="display:none;flex-direction:column;gap:6px">
-          <div id="aiMeta" style="font-family:var(--mono);font-size:9px;color:var(--t2);margin-bottom:4px"></div>
-          <div id="aiContent" style="font-family:var(--sans);font-size:11px;color:var(--t0);line-height:1.65;max-height:320px;overflow-y:auto;white-space:pre-wrap;border:1px solid var(--b0);border-radius:3px;padding:8px;background:var(--bg3)"></div>
+
+        <!-- Panel de respuesta -->
+        <div id="aiPanel" style="display:none;flex-direction:column;gap:5px">
+          <div id="aiMeta" style="font-family:var(--mono);font-size:9px;color:var(--t2)"></div>
+          <div id="aiContent" style="font-family:var(--sans);font-size:11px;color:var(--t0);line-height:1.65;max-height:280px;overflow-y:auto;white-space:pre-wrap;border:1px solid var(--b0);border-radius:3px;padding:8px;background:var(--bg3)"></div>
+          <div style="display:flex;gap:4px">
+            <button onclick="aiCopyResponse()" style="flex:1;font-family:var(--mono);font-size:9px;background:var(--bg3);border:1px solid var(--b1);color:var(--t1);padding:4px;border-radius:2px;cursor:pointer">&#128203; Copiar</button>
+            <button onclick="analyzeWithAI(true)" id="aiCmpBtn" style="flex:1;font-family:var(--mono);font-size:9px;background:var(--bg3);border:1px solid var(--b1);color:var(--t1);padding:4px;border-radius:2px;cursor:pointer" title="Comparar con an&#225;lisis anterior">&#8644; Comparar</button>
+            <button onclick="clearAIPanel()" style="flex:1;font-family:var(--mono);font-size:9px;background:var(--bg3);border:1px solid var(--b1);color:var(--t1);padding:4px;border-radius:2px;cursor:pointer">&#10005; Limpiar</button>
+          </div>
         </div>
+
+        <!-- Historial mini -->
+        <div id="aiHistPanel" style="display:none;flex-direction:column;gap:3px;margin-top:6px;border-top:1px solid var(--b0);padding-top:6px"></div>
       </div>
 
       <div class="cgrp">
@@ -2016,7 +2054,7 @@ function _build3DNavigation(canvas){
   canvas.style.cursor='grab';
 
   document.addEventListener('keydown',e=>{
-    if(e.target.tagName==='INPUT') return;
+    if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA') return;
     const v=$('v3d'); if(!v||v.style.display==='none') return;
     const s=0.04; let axis=null, angle=0;
     if(e.key==='ArrowLeft') {e.preventDefault();axis=[0,1,0];angle=-s;}
@@ -3143,61 +3181,128 @@ function captureCanvasForAI(){
   return dataURL.split(',')[1]; // pure base64
 }
 
-function buildClinicalPrompt(){
+// ─── MÓDULO IA — ANTHROPIC API (mejorado) ─────────────────────────────────────
+
+let _aiType = 'sistematico';
+
+function setAIType(type){
+  _aiType = type;
+  document.querySelectorAll('.ai-type-btn').forEach(b=>{
+    const active = b.dataset.type === type;
+    b.style.borderColor = active ? 'var(--cyan)' : 'var(--b1)';
+    b.style.background  = active ? 'rgba(0,212,255,.1)' : 'var(--bg3)';
+    b.style.color       = active ? 'var(--cyan)' : 'var(--t1)';
+  });
+}
+
+function _aiSetProgress(pct, txt){
+  const bar=$('aiProgressBar'), label=$('aiProgressTxt'), wrap=$('aiProgress');
+  if(wrap)  wrap.style.display = pct>=0 ? 'block' : 'none';
+  if(bar)   bar.style.width = Math.max(0,pct)+'%';
+  if(label && txt) label.textContent = txt;
+}
+
+function buildClinicalPrompt(compareMode=false){
   const sr=S.series[S.activeUID]; if(!sr) return '';
   const m=sr.metadata;
-  // Collect current slice annotations — no patient data
   const annots=S.annotsBySlice?.[S.slice]||[];
   const annotLines=annots.length
     ? annots.map((a,i)=>`  - ${a.type||'medida'} ${i+1}: ${a.result||'—'}`).join('\n')
     : '  Ninguna';
   const lutInfo=S.lutShape&&S.lutShape!=='linear'?` · LUT:${S.lutShape}`:'';
+  const ctx=($('aiContext')?.value||'').trim();
+  const ctxSection=ctx?`\n## Contexto clínico aportado por el radiólogo\n${ctx}\n`:'';
 
-  return `Eres un asistente de análisis de imagen médica. Tu análisis es ORIENTATIVO y de apoyo al radiólogo, nunca sustitutivo.
+  const instrucciones = {
+    sistematico:`## Instrucciones de análisis SISTEMÁTICO
+1. Confirma la modalidad y región anatómica visible
+2. Evalúa la calidad técnica (ruido, artefactos, posicionamiento)
+3. Describe ordenadamente: estructuras óseas → partes blandas → hallazgos incidentales
+4. Señala cualquier hallazgo que requiera atención clínica
+5. Si hay medidas activas, coméntalas en contexto anatómico`,
+    hallazgo:`## Instrucciones de análisis por HALLAZGO ESPECÍFICO
+1. Caracteriza el hallazgo principal: localización, morfología, señal/densidad, bordes
+2. Diagnóstico diferencial ordenado por probabilidad
+3. Relación con estructuras adyacentes
+4. Recomendaciones de seguimiento o estudios complementarios`,
+    comparativo: compareMode && S.aiHistory.length
+      ? `## Instrucciones de análisis COMPARATIVO
+Compara esta imagen con el análisis previo:
+1. Cambios en los hallazgos descritos previamente
+2. Hallazgos nuevos o que han desaparecido
+3. Evolución cuantitativa si hay medidas disponibles
+4. Valoración global: mejoría / estabilidad / progresión
 
-## Contexto técnico
+ANÁLISIS PREVIO (referencia):
+${(S.aiHistory[S.aiHistory.length-1]?.response||'').slice(0,600)}...`
+      : `## Instrucciones de análisis SISTEMÁTICO
+1. Confirma modalidad y región anatómica
+2. Evalúa calidad técnica
+3. Describe hallazgos principales
+4. Señala hallazgos relevantes`
+  };
+
+  return `Eres un asistente de análisis de imagen médica de alta especialización. Tu análisis es ORIENTATIVO y de apoyo al radiólogo, nunca sustitutivo del criterio clínico profesional.
+
+## Contexto técnico del estudio
 - Modalidad: ${m.modality||'?'} · Serie: ${m.seriesDesc||'?'}
 - Región anatómica: ${m.bodyPart||'no especificada'}
-- Equipo: ${m.manufacturer||'?'}
+- Equipo: ${m.manufacturer||'?'} · Institución: ${m.institution||'?'}
 - Slice ${S.slice+1} de ${sr.instances.length} · W:${Math.round(S.ww)} L:${Math.round(S.wc)}${lutInfo}
-
+${ctxSection}
 ## Medidas activas en este slice
 ${annotLines}
 
-## Instrucciones de análisis
-1. Confirma la modalidad y región anatómica visible en la imagen
-2. Evalúa la calidad técnica (ruido, artefactos, posicionamiento)
-3. Describe los hallazgos principales de forma sistemática y ordenada
-4. Señala cualquier hallazgo que merezca atención clínica especial
-5. Si hay medidas activas, coméntalas en contexto
+${instrucciones[_aiType]||instrucciones.sistematico}
 
-Usa terminología radiológica estándar en español. Sé conciso y preciso.
+Usa terminología radiológica estándar en español. Sé conciso, preciso y clínicamente útil.
 
-⚠️ IMPORTANTE: Termina siempre con esta frase exacta:
+IMPORTANTE: Termina siempre con esta frase exacta:
 "⚠️ Análisis orientativo generado por IA. No constituye diagnóstico médico. Contrastar siempre con criterio clínico profesional."`;
 }
 
-async function analyzeWithAI(){
+async function analyzeWithAI(compareMode=false){
   if(S.aiLoading) return;
   const sr=S.series[S.activeUID];
   if(!sr){ toast('Carga una imagen primero','err'); return; }
   if(!sr.instances[S.slice]?.hu){ toast('Decodifica el slice actual primero','err'); return; }
+  if(compareMode && !S.aiHistory.length){ toast('No hay análisis previo para comparar','err'); return; }
+
+  // ── CORS check: API only works from http://, not file:// ─────────────────────
+  if(location.protocol==='file:'){
+    const content=$('aiContent'), panel=$('aiPanel');
+    if(content) content.innerHTML=
+      `<div style="color:var(--amb);line-height:1.7">
+        <strong>⚠️ El módulo IA requiere servidor local</strong><br><br>
+        La API de Anthropic bloquea llamadas directas desde <code>file://</code> por política CORS.<br><br>
+        <strong>Solución (30 segundos):</strong><br>
+        1. Abre una terminal en la carpeta del visor<br>
+        2. Ejecuta: <code style="color:var(--cyan)">python3 -m http.server 8080</code><br>
+        3. Abre: <code style="color:var(--cyan)">http://localhost:8080/dicom-viewer_v7.html</code><br><br>
+        El resto de funciones (2D, MPR, 3D, exportación) siguen disponibles desde <code>file://</code>.
+      </div>`;
+    if(panel) panel.style.display='flex';
+    toast('IA requiere servidor local (http://)','err');
+    return;
+  }
 
   S.aiLoading=true;
   const btn=$('aibtn');
-  if(btn){ btn.disabled=true; btn.innerHTML='<span style="font-size:14px">⏳</span> Analizando…'; }
-  showLD(true,'Analizando con IA…');
+  if(btn){ btn.disabled=true; $('aiBtnTxt').textContent='Analizando…'; $('aiBtnIcon').textContent='⏳'; }
+  _aiSetProgress(10,'Capturando imagen...');
 
   try{
     const base64=captureCanvasForAI();
-    const prompt=buildClinicalPrompt();
+    _aiSetProgress(35,'Construyendo prompt...');
+    const prompt=buildClinicalPrompt(compareMode);
+    _aiSetProgress(55,'Enviando a Claude...');
 
     const res=await fetch('https://api.anthropic.com/v1/messages',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({
         model:'claude-sonnet-4-20250514',
-        max_tokens:1000,
+        max_tokens:1200,
         messages:[{role:'user',content:[
           {type:'image',source:{type:'base64',media_type:'image/jpeg',data:base64}},
           {type:'text',text:prompt}
@@ -3205,6 +3310,7 @@ async function analyzeWithAI(){
       })
     });
 
+    _aiSetProgress(85,'Procesando respuesta...');
     if(!res.ok){
       const err=await res.json().catch(()=>({}));
       throw new Error(err?.error?.message||`HTTP ${res.status}`);
@@ -3212,61 +3318,113 @@ async function analyzeWithAI(){
     const data=await res.json();
     const text=data.content?.find(b=>b.type==='text')?.text??'Sin respuesta';
 
-    S.aiResponse=text;
+    _aiSetProgress(100,'Listo');
+    setTimeout(()=>_aiSetProgress(-1,''),600);
+
     const entry={
-      slice:S.slice+1,
-      total:sr.instances.length,
-      seriesDesc:sr.metadata.seriesDesc,
-      modality:sr.metadata.modality,
+      slice:S.slice+1, total:sr.instances.length,
+      seriesDesc:sr.metadata.seriesDesc, modality:sr.metadata.modality,
+      bodyPart:sr.metadata.bodyPart||'—',
       ww:Math.round(S.ww), wc:Math.round(S.wc),
+      tipo:compareMode?'comparativo':_aiType,
+      contexto:($('aiContext')?.value||'').trim(),
       ts:new Date().toLocaleString('es-ES'),
       response:text
     };
+    S.aiResponse=text;
     S.aiHistory.push(entry);
     renderAIResponse(entry);
+    _updateHistBtn();
     toast('Análisis completado','cyan');
 
   } catch(e){
+    _aiSetProgress(-1,'');
     console.error('[IA]',e);
     toast('Error IA: '+e.message,'err');
     setStatus('Error IA','err');
   } finally{
     S.aiLoading=false;
-    showLD(false);
-    if(btn){ btn.disabled=false; btn.innerHTML='<span style="font-size:14px">&#129504;</span> Analizar con IA'; }
+    if(btn){ btn.disabled=false; $('aiBtnTxt').textContent='Analizar con IA'; $('aiBtnIcon').textContent='🧠'; }
   }
 }
 
 function renderAIResponse(entry){
   const panel=$('aiPanel'); if(!panel) return;
   const meta=$('aiMeta'), content=$('aiContent');
-  if(meta) meta.textContent=`${entry.modality} · ${entry.seriesDesc} · Slice ${entry.slice}/${entry.total} · ${entry.ts}`;
+  const tipoLabel={sistematico:'Sistemático',hallazgo:'Hallazgo',comparativo:'Comparativo'};
+  if(meta) meta.innerHTML=
+    `<span style="color:var(--cyan)">${entry.modality}</span> · ${entry.seriesDesc} · `+
+    `Slice ${entry.slice}/${entry.total}<br>`+
+    `<span style="color:var(--t2)">${tipoLabel[entry.tipo]||entry.tipo} · ${entry.ts}</span>`+
+    (entry.contexto?`<br><span style="color:var(--amb)">${entry.contexto.slice(0,60)}${entry.contexto.length>60?'…':''}</span>`:'');
   if(content) content.textContent=entry.response;
   panel.style.display='flex';
   S.aiPanelOpen=true;
-  // Scroll panel into view
   panel.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+
+function _updateHistBtn(){
+  const btn=$('aiHistBtn'); if(!btn) return;
+  const n=S.aiHistory.length;
+  btn.textContent=`🕒 ${n}`;
+  btn.style.borderColor=n>0?'var(--cyan)':'var(--b1)';
+  btn.style.color=n>0?'var(--cyan)':'var(--t2)';
+}
+
+function showAIHistory(){
+  const panel=$('aiHistPanel'); if(!panel) return;
+  if(!S.aiHistory.length){ toast('Sin análisis en esta sesión',''); return; }
+  const visible=panel.style.display==='flex';
+  if(visible){ panel.style.display='none'; return; }
+  const tipoLabel={sistematico:'Sist.',hallazgo:'Hallaz.',comparativo:'Comp.'};
+  panel.innerHTML=S.aiHistory.map((e,i)=>`
+    <div onclick="aiLoadHistory(${i})" style="cursor:pointer;padding:5px 6px;border-radius:3px;border:1px solid var(--b0);background:var(--bg3);font-family:var(--mono);font-size:9px;color:var(--t1);line-height:1.5;transition:border-color .15s" onmouseover="this.style.borderColor='var(--cyan)'" onmouseout="this.style.borderColor='var(--b0)'">
+      <span style="color:var(--cyan)">#${i+1}</span> · ${tipoLabel[e.tipo]||e.tipo} · ${e.modality} · Slice ${e.slice}<br>
+      <span style="color:var(--t2)">${e.ts}</span>${e.contexto?`<br><span style="color:var(--amb)">${e.contexto.slice(0,40)}…</span>`:''}
+    </div>`).join('');
+  panel.style.display='flex';
+  panel.style.flexDirection='column';
+  panel.style.gap='3px';
+}
+
+function aiLoadHistory(idx){
+  const entry=S.aiHistory[idx]; if(!entry) return;
+  renderAIResponse(entry);
+  $('aiHistPanel').style.display='none';
+  toast(`Análisis #${idx+1} cargado`,'cyan');
+}
+
+function aiCopyResponse(){
+  const txt=$('aiContent')?.textContent;
+  if(!txt){ toast('Sin respuesta para copiar','err'); return; }
+  navigator.clipboard?.writeText(txt).then(()=>toast('Copiado al portapapeles','cyan')).catch(()=>toast('Error al copiar','err'));
+}
+
+function clearAIPanel(){
+  const panel=$('aiPanel'); if(panel) panel.style.display='none';
+  const hist=$('aiHistPanel'); if(hist) hist.style.display='none';
+  S.aiPanelOpen=false;
 }
 
 function exportAILog(){
   if(!S.aiHistory||!S.aiHistory.length){ toast('Sin análisis en esta sesión','err'); return; }
-  const sr=S.series[S.activeUID];
+  const tipoLabel={sistematico:'Sistemático',hallazgo:'Hallazgo',comparativo:'Comparativo'};
   const lines=[
     'MedVis Studio — Log de Análisis IA',
     `Exportado: ${new Date().toLocaleString('es-ES')}`,
-    '='.repeat(60),
-    ''
+    `Total de análisis: ${S.aiHistory.length}`,
+    '='.repeat(60),''
   ];
   S.aiHistory.forEach((e,i)=>{
-    lines.push(`ANÁLISIS ${i+1}`);
-    lines.push(`Serie: ${e.seriesDesc} · Modalidad: ${e.modality}`);
+    lines.push(`ANÁLISIS ${i+1} — ${tipoLabel[e.tipo]||e.tipo}`);
+    lines.push(`Serie: ${e.seriesDesc} (${e.modality}) · Región: ${e.bodyPart}`);
     lines.push(`Slice: ${e.slice}/${e.total} · W:${e.ww} L:${e.wc} · ${e.ts}`);
+    if(e.contexto) lines.push(`Contexto clínico: ${e.contexto}`);
     lines.push('-'.repeat(40));
     lines.push(e.response);
     lines.push('');
   });
   lines.push('⚠ Análisis orientativo generado por IA. No constituye diagnóstico médico.');
-
   const blob=new Blob([lines.join('\n')],{type:'text/plain;charset=utf-8'});
   const a=document.createElement('a');
   a.href=URL.createObjectURL(blob);
@@ -3275,6 +3433,7 @@ function exportAILog(){
   setTimeout(()=>URL.revokeObjectURL(a.href),1000);
   toast('Log exportado','cyan');
 }
+
 
 // ─── SESIÓN D — FEATURES AVANZADAS ────────────────────────────────────────────
 
@@ -3475,7 +3634,7 @@ function resetView(){
 
 // ─── KEYBOARD ────────────────────────────────────────────────────────────────────
 document.addEventListener('keydown',e=>{
-  if(e.target.tagName==='INPUT') return;
+  if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA') return;
   switch(e.key.toLowerCase()){
     case 'w': setTool('wl'); break;
     case 'z': setTool('zoom'); break;
