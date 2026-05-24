@@ -44,10 +44,29 @@ body{background:var(--bg0);color:var(--t0);font-family:var(--sans);height:100vh;
 .dropzone .dico{font-size:22px;display:block;margin-bottom:6px}
 .dropzone p{font-family:var(--mono);font-size:11px;color:var(--t1);line-height:1.7}
 .dropzone p span{color:var(--cyan);display:block}
-.slist{flex:1;overflow-y:auto;padding:7px}
+.slist{flex:1;overflow-y:auto;padding:6px 4px}
 .slist::-webkit-scrollbar{width:3px}
 .slist::-webkit-scrollbar-thumb{background:var(--b1);border-radius:2px}
-.sitem{border:1px solid var(--b0);border-radius:3px;padding:9px;margin-bottom:5px;cursor:pointer;transition:all .15s;background:var(--bg3)}
+.tree-patient{border:1px solid var(--b1);border-radius:4px;margin-bottom:5px;overflow:hidden}
+.tree-patient-hdr{display:flex;align-items:center;gap:6px;padding:7px 8px;background:var(--bg3);cursor:pointer;user-select:none}
+.tree-patient-hdr:hover{background:var(--bgh)}
+.tree-arrow{font-size:9px;color:var(--t2);transition:transform .2s;flex-shrink:0;display:inline-block}
+.tree-open>.tree-arrow,.tree-patient-hdr.open .tree-arrow,.tree-study-hdr.open .tree-arrow{transform:rotate(90deg)}
+.tree-patient-name{font-family:var(--mono);font-size:11px;color:var(--t0);font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tree-patient-meta{font-family:var(--mono);font-size:9px;color:var(--t2)}
+.tree-studies{display:none}
+.tree-studies.open{display:block}
+.tree-study{border-top:1px solid var(--b0)}
+.tree-study-hdr{display:flex;align-items:center;gap:5px;padding:5px 8px 5px 16px;cursor:pointer;user-select:none;background:transparent}
+.tree-study-hdr:hover{background:var(--bgh)}
+.tree-study-desc{font-family:var(--mono);font-size:10px;color:var(--t1);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tree-study-date{font-family:var(--mono);font-size:9px;color:var(--t2)}
+.tree-series-list{display:none}
+.tree-series-list.open{display:block}
+.sitem{border:1px solid var(--b0);border-radius:3px;padding:6px 8px 6px 20px;margin:1px 4px;cursor:pointer;transition:all .15s;background:transparent}
+.sitem:hover{border-color:var(--b1);background:var(--bgh)}
+.sitem.active{border-color:var(--cyan);background:rgba(0,212,255,.05)}
+/* .sitem now defined in tree CSS */
 .sitem:hover{border-color:var(--b1);background:var(--bgh)}
 .sitem.active{border-color:var(--cyan);background:rgba(0,212,255,.05)}
 .badge{font-family:var(--mono);font-size:9px;font-weight:600;padding:2px 5px;border-radius:2px;background:rgba(0,212,255,.18);color:var(--cyan);letter-spacing:.1em;display:inline-block;margin-bottom:5px}
@@ -554,6 +573,7 @@ kbd{font-family:var(--mono);font-size:9px;background:var(--bg3);border:1px solid
 // ─── STATE ────────────────────────────────────────────────────────────────────
 const S = {
   series:{}, activeUID:null, slice:0,
+  tree:{},       // hierarchical Patient→Study→Series
   annotsBySlice:{},
   ww:400, wc:40, tool:'wl', inverted:false, lutShape:'linear',  // 'linear'|'sigmoid'|'log'
   zoom:1, panX:0, panY:0, rotation:0, flipH:false, flipV:false,
@@ -654,7 +674,189 @@ function onDrop(e){
   else toast('No se detectaron archivos','err');
 }
 
+// ─── DICOMDIR PARSER ──────────────────────────────────────────────────────────
+// Parses the DICOMDIR index file to extract Patient/Study/Series/Image hierarchy
+// without having to open every individual file.
+async function _parseDICOMDIR(dicomdirFile, allFiles){
+  showLD(true,'Leyendo DICOMDIR...'); showPG(true);
+  try{
+    const buf=await readBuf(dicomdirFile);
+    const bytes=new Uint8Array(buf);
+    let ds;
+    try{ ds=dicomParser.parseDicom(bytes); }
+    catch(e){ throw new Error('No se pudo parsear DICOMDIR: '+e.message); }
+
+    // Build a map of filename → File object for quick lookup
+    const fileMap=new Map();
+    allFiles.forEach(f=>{
+      // Normalize: use uppercase path relative to root
+      const key=f.webkitRelativePath||f.name;
+      fileMap.set(key.toUpperCase().replace(/\\/g,'/'), f);
+      fileMap.set(f.name.toUpperCase(), f);
+    });
+
+    // Walk the directory record sequence (tag 0004,1220)
+    const seq=ds.elements['x00041220'];
+    if(!seq||!seq.items){ throw new Error('Sin secuencia de registros en DICOMDIR'); }
+
+    // Gather all records grouped by type
+    const patients={}, studyMap={}, seriesMap={};
+    let curPatient=null, curStudy=null, curSeries=null;
+    let imageCount=0;
+
+    for(const item of seq.items){
+      if(!item.dataSet) continue;
+      const recType=(item.dataSet.string('x00041430')||'').trim().toUpperCase();
+      const tgi=(tag)=>{ try{ return item.dataSet.string(tag); }catch{ return null; } };
+
+      if(recType==='PATIENT'){
+        const pid=tgi('x00100020')||'UNKNOWN';
+        const pname=tgi('x00100010')||'Anonymous';
+        curPatient=pid+'||'+pname;
+        if(!patients[curPatient]) patients[curPatient]={patientID:pid,patientName:pname,studyKeys:[]};
+
+      } else if(recType==='STUDY'){
+        const suid=tgi('x0020000d')||('STU_'+Object.keys(studyMap).length);
+        curStudy=suid;
+        if(!studyMap[suid]) studyMap[suid]={
+          studyUID:suid, studyDate:tgi('x00080020')||'',
+          studyDesc:tgi('x00081030')||'', institution:tgi('x00080080')||'',
+          patKey:curPatient, seriesKeys:[]
+        };
+        if(curPatient && !patients[curPatient].studyKeys.includes(suid))
+          patients[curPatient].studyKeys.push(suid);
+
+      } else if(recType==='SERIES'){
+        const sruid=tgi('x0020000e')||('SER_'+Object.keys(seriesMap).length);
+        curSeries=sruid;
+        if(!seriesMap[sruid]) seriesMap[sruid]={
+          seriesUID:sruid, modality:tgi('x00080060')||'?',
+          seriesDesc:tgi('x0008103e')||'', seriesNum:tgi('x00200011')||'',
+          studyKey:curStudy, files:[]
+        };
+        if(curStudy && !studyMap[curStudy]?.seriesKeys.includes(sruid))
+          studyMap[curStudy]?.seriesKeys.push(sruid);
+
+      } else if(recType==='IMAGE'||recType==='SOP INSTANCE'||recType==='RT IMAGE'||recType==='PRESENTATION STATE'){
+        // Get referenced file path
+        const refSeq=item.dataSet.elements['x00041500'];
+        if(refSeq?.items?.[0]){
+          const pathItem=refSeq.items[0];
+          let refPath='';
+          try{ refPath=(pathItem.dataSet.string('x00041510')||'').replace(/\\/g,'/').toUpperCase(); }catch{}
+          // Also try direct path tag
+          if(!refPath){
+            try{ refPath=(item.dataSet.string('x00041500')||'').toUpperCase(); }catch{}
+          }
+          const file=fileMap.get(refPath)||fileMap.get(refPath.split('/').pop());
+          if(file && curSeries){
+            seriesMap[curSeries].files.push(file);
+            imageCount++;
+          }
+        }
+      }
+    }
+
+    if(imageCount===0){
+      // DICOMDIR parsed but no file refs found — fall through to normal load
+      toast('DICOMDIR sin referencias de archivo — cargando directamente','');
+      allFiles=allFiles.filter(f=>f.name.toUpperCase()!=='DICOMDIR');
+      return processFiles(allFiles);
+    }
+
+    setPG(50); $('ldtxt').textContent=`DICOMDIR: ${imageCount} imágenes, cargando...`;
+    await yield_();
+
+    // Now load actual DICOM files for each series
+    S.series={}; S.tree={}; S.activeUID=null;
+    let parsed=0, errors=0;
+
+    for(const [sruid, srInfo] of Object.entries(seriesMap)){
+      if(!srInfo.files.length) continue;
+      S.series[sruid]={ instances:[], metadata:null };
+
+      for(let i=0;i<srInfo.files.length;i++){
+        try{
+          const fbuf=await readBuf(srInfo.files[i]);
+          const fbytes=new Uint8Array(fbuf);
+          let fds;
+          try{ fds=dicomParser.parseDicom(fbytes); }
+          catch{ try{ fds=dicomParser.parseDicom(fbytes,{untilTag:'7FE00010'}); }catch{ errors++; continue; } }
+
+          const n=parseInt(tg(fds,'x00200013')||'0')||i;
+          if(!S.series[sruid].metadata) S.series[sruid].metadata=extractMeta(fds);
+          // Enrich metadata from DICOMDIR
+          const m=S.series[sruid].metadata;
+          m.seriesDesc=srInfo.seriesDesc||m.seriesDesc;
+          m.modality=srInfo.modality||m.modality;
+          m.seriesNum=srInfo.seriesNum||m.seriesNum;
+          m.studyUID=srInfo.studyKey||m.studyUID;
+          const stud=studyMap[srInfo.studyKey];
+          if(stud){ m.studyDesc=stud.studyDesc||m.studyDesc; m.studyDate=stud.studyDate||m.studyDate; }
+
+          S.series[sruid].instances.push({n, file:srInfo.files[i], ds:fds, buf:fbuf});
+          parsed++;
+        } catch{ errors++; }
+      }
+      S.series[sruid].instances.sort((a,b)=>a.n-b.n);
+      setPG(50+Math.round(parsed/imageCount*45));
+      await yield_();
+    }
+
+    // Build tree from DICOMDIR hierarchy
+    for(const [patKey,pat] of Object.entries(patients)){
+      if(!pat.studyKeys.length) continue;
+      S.tree[patKey]={patientID:pat.patientID, patientName:pat.patientName, studies:{}};
+      for(const studyKey of pat.studyKeys){
+        const stud=studyMap[studyKey]; if(!stud) continue;
+        const serUIDs=stud.seriesKeys.filter(sk=>S.series[sk]?.instances.length>0);
+        if(!serUIDs.length) continue;
+        S.tree[patKey].studies[studyKey]={
+          studyUID:stud.studyUID, studyDate:stud.studyDate,
+          studyDesc:stud.studyDesc, institution:stud.institution,
+          seriesUIDs:serUIDs
+        };
+      }
+    }
+    // Add any series not found in DICOMDIR tree
+    for(const uid of Object.keys(S.series)){
+      const found=Object.values(S.tree).some(p=>Object.values(p.studies).some(st=>st.seriesUIDs.includes(uid)));
+      if(!found){
+        const m=S.series[uid].metadata||{};
+        const pk=(m.patientID||'UNKNOWN')+'||(desconocido)';
+        if(!S.tree[pk]) S.tree[pk]={patientID:m.patientID||'?',patientName:m.patientName||'Anónimo',studies:{}};
+        const sk=m.studyUID||'STUDY_DEFAULT';
+        if(!S.tree[pk].studies[sk]) S.tree[pk].studies[sk]={studyUID:sk,studyDate:m.studyDate,studyDesc:m.studyDesc,institution:m.institution,seriesUIDs:[]};
+        S.tree[pk].studies[sk].seriesUIDs.push(uid);
+      }
+    }
+
+    showLD(false); showPG(false);
+    const ns=Object.keys(S.series).length;
+    setStatus(`DICOMDIR: ${parsed} imgs · ${ns} series`,'ok');
+    toast(`DICOMDIR: ${parsed} imágenes · ${ns} series`,'cyan');
+    renderSeriesList(); showViewport();
+    loadSeries(Object.keys(S.series)[0]);
+    _prefetchDims(Object.keys(S.series).slice(1));
+
+  } catch(e){
+    showLD(false); showPG(false);
+    console.error('[DICOMDIR]',e);
+    toast('Error DICOMDIR: '+e.message+' — cargando directamente','err');
+    // Fallback: load all files normally
+    await processFiles(allFiles.filter(f=>f.name.toUpperCase()!=='DICOMDIR'));
+  }
+}
+
 async function processFiles(rawFiles){
+  // Check if there's a DICOMDIR file — use it to build hierarchy if present
+  const dicomdirFile=rawFiles.find(f=>f.name.toUpperCase()==='DICOMDIR');
+  if(dicomdirFile){
+    log('[DICOMDIR] Fichero índice detectado, parseando jerarquía...');
+    await _parseDICOMDIR(dicomdirFile, rawFiles);
+    return;
+  }
+
   let files=rawFiles.filter(f=>{
     if(f.name.toUpperCase()==='DICOMDIR') return false; // índice, no imagen
     const n=f.name.toLowerCase();
@@ -760,9 +962,9 @@ async function _prefetchDims(uids){
       if(inst?.rows>0 && inst?.cols>0){
         sr.metadata.rows=inst.rows;
         sr.metadata.cols=inst.cols;
-        // Update badge in list
+        // Update badge in tree list
         const badge=document.querySelector(`.sitem[data-uid="${uid}"] .smeta`);
-        if(badge) badge.textContent=`${sr.instances.length} img · ${inst.rows}x${inst.cols}`;
+        if(badge) badge.textContent=`${sr.instances.length} img · ${inst.rows}x${inst.cols}`+(sr.metadata.seriesNum?` · #${sr.metadata.seriesNum}`:'');
       }
     } catch(e){ /* skip silently */ }
     await yield_(); // yield between series to keep UI responsive
@@ -770,32 +972,104 @@ async function _prefetchDims(uids){
 }
 
 // ─── SERIES LIST ───────────────────────────────────────────────────────────────
-function renderSeriesList(){
-  const uids=Object.keys(S.series);
-  $('seriesCount').textContent=`(${uids.length})`;
+function renderSeriesList(){ renderTree(); }
+
+function renderTree(){
   const con=$('seriesList'); con.innerHTML='';
-  uids.forEach(uid=>{
-    const sr=S.series[uid], m=sr.metadata;
-    const div=document.createElement('div');
-    div.className='sitem'; div.dataset.uid=uid;
-    const dimOK = m.rows && m.cols && /^\d+$/.test(String(m.rows)) && /^\d+$/.test(String(m.cols));
-    div.innerHTML=`<div class="badge">${m.modality}</div><div class="sdesc">${m.seriesDesc}</div><div class="smeta">${sr.instances.length} img · ${dimOK ? m.rows+'x'+m.cols : '···'}</div>`;
-    div.onclick=()=>loadSeries(uid);
-    con.appendChild(div);
-  });
-  const m=S.series[uids[0]]?.metadata;
-  if(m){
-    const pn=(m.patientName||'').replace(/\^/g,' ');
-    $('patBadge').innerHTML=`<span style="color:var(--cyan)">${pn}</span> &nbsp;|&nbsp; ${fmtDate(m.studyDate)}`;
-    $('studyPanel').style.display='block';
-    $('studyMeta').innerHTML=mrow('Patient',pn,true)+mrow('ID',m.patientID)+mrow('Study',m.studyDesc)+mrow('Date',fmtDate(m.studyDate))+mrow('Institution',m.institution);
+  const patKeys=Object.keys(S.tree||{});
+  if(!patKeys.length){
+    // Fallback: flat list from S.series
+    Object.keys(S.series).forEach(uid=>{
+      const sr=S.series[uid],m=sr.metadata;
+      const dimOK=m.rows&&m.cols&&/^\d+$/.test(String(m.rows))&&/^\d+$/.test(String(m.cols));
+      const div=document.createElement('div');
+      div.className='sitem'; div.dataset.uid=uid;
+      div.innerHTML=`<div style="display:flex;align-items:center;gap:5px;margin-bottom:3px"><span class="badge">${m.modality}</span><span class="sdesc" style="flex:1">${m.seriesDesc}</span></div><div class="smeta">${sr.instances.length} img · ${dimOK?m.rows+'x'+m.cols:'···'}</div>`;
+      div.onclick=()=>loadSeries(uid);
+      con.appendChild(div);
+    });
+    return;
   }
+  const totalSeries=Object.keys(S.series).length;
+  const firstPat=S.tree[patKeys[0]];
+  const pn=(firstPat.patientName||'').replace(/\^/g,' ');
+  $('patBadge').innerHTML=`<span style="color:var(--cyan)">${pn||'Anónimo'}</span>`+
+    (patKeys.length>1?` +${patKeys.length-1} pac.`:'')+
+    ` &nbsp;|&nbsp; ${totalSeries} serie${totalSeries!==1?'s':''}`;
+
+  patKeys.forEach(patKey=>{
+    const pat=S.tree[patKey];
+    const patName=(pat.patientName||'').replace(/\^/g,' ')||'Anónimo';
+    const studyKeys=Object.keys(pat.studies||{});
+
+    const patDiv=document.createElement('div');
+    patDiv.className='tree-patient';
+
+    const patHdr=document.createElement('div');
+    patHdr.className='tree-patient-hdr open';
+    patHdr.innerHTML=`<span class="tree-arrow">&#9654;</span>`+
+      `<span class="tree-patient-name" title="${patName}">${patName}</span>`+
+      `<span class="tree-patient-meta">${pat.patientID||'—'}</span>`;
+
+    const studiesDiv=document.createElement('div');
+    studiesDiv.className='tree-studies open';
+
+    patHdr.onclick=()=>{ patHdr.classList.toggle('open'); studiesDiv.classList.toggle('open'); };
+
+    studyKeys.forEach(studyKey=>{
+      const study=pat.studies[studyKey];
+      const seriesUIDs=study.seriesUIDs||[];
+      const studyDiv=document.createElement('div'); studyDiv.className='tree-study';
+      const studyHdr=document.createElement('div'); studyHdr.className='tree-study-hdr open';
+      studyHdr.innerHTML=`<span class="tree-arrow">&#9654;</span>`+
+        `<span class="tree-study-desc" title="${study.studyDesc||''}">${study.studyDesc||'Estudio'}</span>`+
+        `<span class="tree-study-date">${fmtDate(study.studyDate)}</span>`;
+      const serList=document.createElement('div'); serList.className='tree-series-list open';
+      studyHdr.onclick=()=>{ studyHdr.classList.toggle('open'); serList.classList.toggle('open'); };
+
+      seriesUIDs.forEach(uid=>{
+        const sr=S.series[uid]; if(!sr) return;
+        const m=sr.metadata;
+        const dimOK=m.rows&&m.cols&&/^\d+$/.test(String(m.rows))&&/^\d+$/.test(String(m.cols));
+        const item=document.createElement('div');
+        item.className='sitem'; item.dataset.uid=uid;
+        item.innerHTML=`<div style="display:flex;align-items:center;gap:5px;margin-bottom:3px">`+
+          `<span class="badge">${m.modality}</span><span class="sdesc" style="flex:1">${m.seriesDesc}</span></div>`+
+          `<div class="smeta">${sr.instances.length} img · ${dimOK?m.rows+'x'+m.cols:'···'}`+
+          (m.seriesNum?` · S${m.seriesNum}`:'')+`</div>`;
+        item.onclick=()=>loadSeries(uid);
+        serList.appendChild(item);
+      });
+
+      studyDiv.appendChild(studyHdr); studyDiv.appendChild(serList);
+      studiesDiv.appendChild(studyDiv);
+    });
+    patDiv.appendChild(patHdr); patDiv.appendChild(studiesDiv);
+    con.appendChild(patDiv);
+  });
+  _highlightActiveTreeItem();
+}
+
+function _highlightActiveTreeItem(){
+  document.querySelectorAll('.sitem').forEach(el=>{
+    el.classList.toggle('active', el.dataset.uid===S.activeUID);
+  });
 }
 
 // ─── LOAD SERIES ───────────────────────────────────────────────────────────────
 async function loadSeries(uid){
   if(S.cineActive) cineToggle();
-  document.querySelectorAll('.sitem').forEach(el=>el.classList.toggle('active',el.dataset.uid===uid));
+  _highlightActiveTreeItem();
+  // Update header badge to reflect active patient/study
+  const _patKey=Object.keys(S.tree||{}).find(pk=>
+    Object.values(S.tree[pk].studies).some(st=>st.seriesUIDs.includes(uid))
+  );
+  if(_patKey){
+    const _pat=S.tree[_patKey];
+    const _pn=(_pat.patientName||'').replace(/\^/g,' ');
+    const _study=Object.values(_pat.studies).find(st=>st.seriesUIDs.includes(uid));
+    $('patBadge').innerHTML=`<span style="color:var(--cyan)">${_pn||'Anónimo'}</span> &nbsp;|&nbsp; ${_study?fmtDate(_study.studyDate):'—'}`;
+  }
   S.activeUID=uid; S.slice=0; S.annotsBySlice={}; clearSVG();
   S.mprCutX=undefined; S.mprCutY=undefined; _mprClicksAttached=false;
   const sr=S.series[uid], m=sr.metadata, total=sr.instances.length;
@@ -816,7 +1090,7 @@ async function loadSeries(uid){
     if(changed){
       // Refresh series list badge
       const badge=document.querySelector(`.sitem[data-uid="${uid}"] .smeta`);
-      if(badge) badge.textContent=`${total} img · ${m.rows}x${m.cols}`;
+      if(badge) badge.textContent=`${total} img · ${m.rows}x${m.cols}`+(m.seriesNum?` · #${m.seriesNum}`:'');
       // Refresh metadata panel
       $('metaGrid').innerHTML=
         mrow('Modality',m.modality,true)+mrow('Series',m.seriesDesc)+mrow('Body',m.bodyPart)+
