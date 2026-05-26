@@ -183,7 +183,7 @@ kbd{font-family:var(--mono);font-size:9px;background:var(--bg3);border:1px solid
 <header class="hdr">
   <div class="logo">MedVis Studio</div>
   <div class="hdiv"></div>
-  <div class="hinfo">DICOM VIEWER <span>v7</span></div>
+  <div class="hinfo">DICOM VIEWER <span>v8</span></div>
   <div class="hdiv"></div>
   <div class="hinfo" id="patBadge">no study loaded</div>
   <div class="hbtns">
@@ -686,20 +686,86 @@ async function _parseDICOMDIR(dicomdirFile, allFiles){
     try{ ds=dicomParser.parseDicom(bytes); }
     catch(e){ throw new Error('No se pudo parsear DICOMDIR: '+e.message); }
 
-    // Build a map of filename → File object for quick lookup
-    const fileMap=new Map();
+    // ── Build file lookup maps (multiple strategies for path matching) ─────────
+    const fileByName=new Map();   // basename → File
+    const fileByPath=new Map();   // normalized full path → File
+    const fileByTail=new Map();   // last 2 path components → File
+
     allFiles.forEach(f=>{
-      // Normalize: use uppercase path relative to root
-      const key=f.webkitRelativePath||f.name;
-      fileMap.set(key.toUpperCase().replace(/\\/g,'/'), f);
-      fileMap.set(f.name.toUpperCase(), f);
+      if(f.name.toUpperCase()==='DICOMDIR') return;
+      const name=f.name.toUpperCase();
+      fileByName.set(name, f);
+
+      const rel=(f.webkitRelativePath||f.name).toUpperCase().replace(/\\/g,'/');
+      fileByPath.set(rel, f);
+
+      // Store without root folder prefix (drop first component)
+      const parts=rel.split('/');
+      if(parts.length>1) fileByPath.set(parts.slice(1).join('/'), f);
+      // Last 2 components (e.g. SE000000/MR000001)
+      if(parts.length>=2) fileByTail.set(parts.slice(-2).join('/'), f);
+      // Last component only
+      fileByTail.set(parts[parts.length-1], f);
     });
 
-    // Walk the directory record sequence (tag 0004,1220)
+    // Resolve a DICOMDIR path reference to a File object
+    function resolveRef(refPath){
+      if(!refPath) return null;
+      const p=refPath.toUpperCase().replace(/\\/g,'/').replace(/^\//,'');
+      // Try exact path
+      let f=fileByPath.get(p); if(f) return f;
+      // Try without leading folder
+      const parts=p.split('/');
+      f=fileByPath.get(parts.slice(1).join('/')); if(f) return f;
+      // Try last 2 components
+      if(parts.length>=2){ f=fileByTail.get(parts.slice(-2).join('/')); if(f) return f; }
+      // Try basename only
+      f=fileByName.get(parts[parts.length-1]); if(f) return f;
+      return null;
+    }
+
+    // ── Read Referenced File ID from IMAGE record ─────────────────────────────
+    // Tag 0004,1500 is a CS sequence of path components in DICOMDIR
+    function getRefFilePath(itemDs){
+      // Strategy 1: sequence of string values (standard DICOMDIR)
+      const el=itemDs.elements['x00041500'];
+      if(!el) return null;
+
+      // If it's a sequence of items (each item = one path component)
+      if(el.items && el.items.length>0){
+        const parts=[];
+        for(const pathItem of el.items){
+          try{
+            // Each item contains tag x00041510 (Referenced File ID)
+            const comp=pathItem.dataSet?.string('x00041510')||'';
+            if(comp.trim()) parts.push(comp.trim());
+          }catch{}
+        }
+        if(parts.length) return parts.join('/');
+      }
+
+      // Strategy 2: direct multi-value string
+      try{
+        const raw=itemDs.string('x00041500');
+        if(raw) return raw.replace(/\\/g,'/').trim();
+      }catch{}
+
+      // Strategy 3: raw bytes — read as backslash-delimited CS
+      if(el.dataOffset && el.length && el.length < 512){
+        try{
+          const raw=new TextDecoder('latin1').decode(
+            new Uint8Array(buf, el.dataOffset, el.length)
+          ).replace(/\x00/g,'').trim();
+          if(raw) return raw.replace(/\\/g,'/');
+        }catch{}
+      }
+      return null;
+    }
+
+    // ── Walk directory record sequence ────────────────────────────────────────
     const seq=ds.elements['x00041220'];
     if(!seq||!seq.items){ throw new Error('Sin secuencia de registros en DICOMDIR'); }
 
-    // Gather all records grouped by type
     const patients={}, studyMap={}, seriesMap={};
     let curPatient=null, curStudy=null, curSeries=null;
     let imageCount=0;
@@ -737,31 +803,24 @@ async function _parseDICOMDIR(dicomdirFile, allFiles){
         if(curStudy && !studyMap[curStudy]?.seriesKeys.includes(sruid))
           studyMap[curStudy]?.seriesKeys.push(sruid);
 
-      } else if(recType==='IMAGE'||recType==='SOP INSTANCE'||recType==='RT IMAGE'||recType==='PRESENTATION STATE'){
-        // Get referenced file path
-        const refSeq=item.dataSet.elements['x00041500'];
-        if(refSeq?.items?.[0]){
-          const pathItem=refSeq.items[0];
-          let refPath='';
-          try{ refPath=(pathItem.dataSet.string('x00041510')||'').replace(/\\/g,'/').toUpperCase(); }catch{}
-          // Also try direct path tag
-          if(!refPath){
-            try{ refPath=(item.dataSet.string('x00041500')||'').toUpperCase(); }catch{}
-          }
-          const file=fileMap.get(refPath)||fileMap.get(refPath.split('/').pop());
-          if(file && curSeries){
-            seriesMap[curSeries].files.push(file);
-            imageCount++;
-          }
+      } else if(['IMAGE','SOP INSTANCE','RT IMAGE','PRESENTATION STATE',
+                 'ENCAP DOC','VIDEO','SPECTROSCOPY','SR DOCUMENT'].includes(recType)){
+        const refPath=getRefFilePath(item.dataSet);
+        const file=resolveRef(refPath);
+        if(file && curSeries){
+          seriesMap[curSeries].files.push(file);
+          imageCount++;
+        } else if(refPath){
+          console.warn('[DICOMDIR] No se encontró archivo para ruta:',refPath);
         }
       }
     }
 
+    console.log(`[DICOMDIR] ${Object.keys(patients).length} pacientes, ${Object.keys(studyMap).length} estudios, ${Object.keys(seriesMap).length} series, ${imageCount} imágenes`);
+
     if(imageCount===0){
-      // DICOMDIR parsed but no file refs found — fall through to normal load
-      toast('DICOMDIR sin referencias de archivo — cargando directamente','');
-      allFiles=allFiles.filter(f=>f.name.toUpperCase()!=='DICOMDIR');
-      return processFiles(allFiles);
+      toast('DICOMDIR sin referencias resolubles — cargando directamente','');
+      return processFiles(allFiles.filter(f=>f.name.toUpperCase()!=='DICOMDIR'));
     }
 
     setPG(50); $('ldtxt').textContent=`DICOMDIR: ${imageCount} imágenes, cargando...`;
@@ -1071,7 +1130,8 @@ async function loadSeries(uid){
     $('patBadge').innerHTML=`<span style="color:var(--cyan)">${_pn||'Anónimo'}</span> &nbsp;|&nbsp; ${_study?fmtDate(_study.studyDate):'—'}`;
   }
   S.activeUID=uid; S.slice=0; S.annotsBySlice={}; clearSVG();
-  S.mprCutX=undefined; S.mprCutY=undefined; _mprClicksAttached=false;
+  S.mprCutX=undefined; S.mprCutY=undefined;
+  if(_mprAC){ _mprAC.abort(); _mprAC=null; } // detach MPR listeners for old series
   const sr=S.series[uid], m=sr.metadata, total=sr.instances.length;
   $('sliceR').max=Math.max(0,total-1); $('sliceR').value=0;
   $('sliceCnt').textContent=`1 / ${total}`;
@@ -1968,39 +2028,75 @@ function _drawMPRCrosshair(id, nx, ny){
   ctx.restore();
 }
 
-// Click on coronal/sagittal panes to move crosshair & jump to that slice
-let _mprClicksAttached=false;
+// ── MPR crosshair interaction ────────────────────────────────────────────────
+// Each pane maps (nx, ny) differently:
+//   Axial   : nx→col (mprCutX),  ny→row (mprCutY)
+//   Coronal : nx→col (mprCutX),  ny→depth (goSlice)  [row fixed at mprCutY]
+//   Sagittal: nx→depth (goSlice),ny→row  (mprCutY)   [col fixed at mprCutX]
+// AbortController lets us cleanly remove all listeners when a new series loads.
+let _mprAC = null; // AbortController for current series' MPR listeners
 function _attachMPRClicks(){
-  if(_mprClicksAttached) return; _mprClicksAttached=true;
-  const slices=S.mprVol;
+  const slices=S.mprVol; if(!slices||!slices.length) return;
   const imgW=slices[0].cols, imgH=slices[0].rows, D=slices.length;
 
+  // Tear down previous listeners (fires on series change since loadSeries
+  // calls _mprAC?.abort() before resetting mprVol)
+  if(_mprAC) _mprAC.abort();
+  _mprAC = new AbortController();
+  const sig = { signal: _mprAC.signal };
+
+  // Convert client coords → normalised (0..1) within the letterbox rect
   function _relPx(canvas, clientX, clientY){
-    // Convert client coords to canvas-local, then to image coords via letterbox rect
-    const br=canvas.getBoundingClientRect();
-    const scaleX=canvas.width/br.width, scaleY=canvas.height/br.height;
-    const canX=(clientX-br.left)*scaleX, canY=(clientY-br.top)*scaleY;
-    const rect=canvas._mprRect||{x:0,y:0,w:canvas.width,h:canvas.height};
+    const br  = canvas.getBoundingClientRect();
+    const scX = canvas.width  / br.width;
+    const scY = canvas.height / br.height;
+    const canX = (clientX - br.left) * scX;
+    const canY = (clientY - br.top)  * scY;
+    const r = canvas._mprRect || {x:0,y:0,w:canvas.width,h:canvas.height};
     return {
-      nx: Math.max(0,Math.min(1,(canX-rect.x)/rect.w)),
-      ny: Math.max(0,Math.min(1,(canY-rect.y)/rect.h)),
+      nx: Math.max(0, Math.min(1, (canX - r.x) / r.w)),
+      ny: Math.max(0, Math.min(1, (canY - r.y) / r.h)),
     };
   }
-  $('mAxial').addEventListener('click',e=>{
-    const {nx,ny}=_relPx($('mAxial'),e.clientX,e.clientY);
-    S.mprCutX=Math.floor(nx*imgW); S.mprCutY=Math.floor(ny*imgH);
+
+  // Generic handler factory — drag=true enables continuous update while held
+  function _makeHandler(canvasId, onCoords){
+    const canvas = $(canvasId);
+    let dragging = false;
+    canvas.addEventListener('mousedown', e=>{
+      e.preventDefault(); dragging=true;
+      onCoords(_relPx(canvas, e.clientX, e.clientY));
+    }, sig);
+    window.addEventListener('mousemove', e=>{
+      if(!dragging) return;
+      // Only act when cursor is within this canvas
+      const br = canvas.getBoundingClientRect();
+      if(e.clientX<br.left||e.clientX>br.right||e.clientY<br.top||e.clientY>br.bottom) return;
+      onCoords(_relPx(canvas, e.clientX, e.clientY));
+    }, sig);
+    window.addEventListener('mouseup', ()=>{ dragging=false; }, sig);
+  }
+
+  // ── Axial: click/drag moves both crosshairs (col + row) ──────────────────
+  _makeHandler('mAxial', ({nx,ny})=>{
+    S.mprCutX = Math.max(0, Math.min(imgW-1, Math.floor(nx*imgW)));
+    S.mprCutY = Math.max(0, Math.min(imgH-1, Math.floor(ny*imgH)));
     renderMPR();
   });
-  $('mCoronal').addEventListener('click',e=>{
-    const {nx,ny}=_relPx($('mCoronal'),e.clientX,e.clientY);
-    S.mprCutX=Math.floor(nx*imgW);
-    goSlice(Math.floor(ny*D));
+
+  // ── Coronal: nx→col (mprCutX), ny→slice depth (Z) ────────────────────────
+  _makeHandler('mCoronal', ({nx,ny})=>{
+    S.mprCutX = Math.max(0, Math.min(imgW-1, Math.floor(nx*imgW)));
+    const zi  = Math.max(0, Math.min(D-1, Math.floor(ny*D)));
+    goSlice(zi);          // updates S.slice → axial follows automatically
     renderMPR();
   });
-  $('mSagittal').addEventListener('click',e=>{
-    const {nx,ny}=_relPx($('mSagittal'),e.clientX,e.clientY);
-    S.mprCutY=Math.floor(ny*imgH);
-    goSlice(Math.floor(nx*D));
+
+  // ── Sagittal: nx→slice depth (Z), ny→row (mprCutY) ───────────────────────
+  _makeHandler('mSagittal', ({nx,ny})=>{
+    const zi  = Math.max(0, Math.min(D-1, Math.floor(nx*D)));
+    S.mprCutY = Math.max(0, Math.min(imgH-1, Math.floor(ny*imgH)));
+    goSlice(zi);
     renderMPR();
   });
 }
