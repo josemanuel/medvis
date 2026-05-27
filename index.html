@@ -3539,8 +3539,17 @@ function compGoSlice(i, idx){
 }
 
 function compToggleSync(){
-  _comp.syncWL=$('compSyncWL')?.checked||false;
-  _comp.syncSlice=$('compSyncSlice')?.checked||false;
+  _comp.syncWL    = $('compSyncWL')?.checked  || false;
+  _comp.syncSlice = $('compSyncSlice')?.checked || false;
+  // When W/L sync is just enabled, immediately broadcast the W/L of the first
+  // loaded panel to all others so they don't start mismatched on the next drag.
+  if(_comp.syncWL){
+    const src = _comp.panels.find(p=>p.uid);
+    if(src){
+      for(let j=0;j<4;j++){ _comp.panels[j].ww=src.ww; _comp.panels[j].wc=src.wc; }
+      for(let j=0;j<4;j++) if(_comp.panels[j].uid) _compRenderPanel(j);
+    }
+  }
 }
 
 // ── Plane detection ──────────────────────────────────────────────────────────
@@ -3612,43 +3621,76 @@ function compSyncPlanes(){
   toast(`Planos sincronizados: ${desc}`,'cyan');
 }
 
-// W/L drag on comparator panels
+// ── Comparator mouse interaction ──────────────────────────────────────────────
+// Single global drag state — mousemove/mouseup work even when cursor leaves a panel.
+// rAF throttle prevents multiple repaints per frame during fast drags.
 (function _attachCompMouse(){
+  const _drag = { active:false, idx:-1, sx:0, sy:0, ww0:400, wc0:40 };
+  let _rafPending = false;
+
+  function _applyDrag(mx, my){
+    if(!_drag.active) return;
+    const src = _comp.panels[_drag.idx];
+    src.ww = Math.max(1, _drag.ww0 + (mx - _drag.sx) * 3);
+    src.wc = _drag.wc0 + (my - _drag.sy) * 2;
+    if(_comp.syncWL){
+      for(let j=0;j<4;j++){ _comp.panels[j].ww=src.ww; _comp.panels[j].wc=src.wc; }
+    }
+    if(!_rafPending){
+      _rafPending = true;
+      requestAnimationFrame(()=>{
+        _rafPending = false;
+        if(_comp.syncWL){
+          for(let j=0;j<4;j++) if(_comp.panels[j].uid) _compRenderPanel(j);
+        } else {
+          _compRenderPanel(_drag.idx);
+        }
+        // Refresh W/L line in info overlays
+        const targets = _comp.syncWL ? [0,1,2,3] : [_drag.idx];
+        targets.forEach(j=>{
+          const info=$('cinfo'+j); if(!info) return;
+          const pj=_comp.panels[j];
+          const lines=info.innerHTML.split('<br>');
+          lines[0]=`W:${Math.round(pj.ww)} L:${Math.round(pj.wc)}`;
+          info.innerHTML=lines.join('<br>');
+        });
+      });
+    }
+  }
+
   window.addEventListener('load',()=>{
     for(let i=0;i<4;i++){
       (function(idx){
-        let dragging=false, sx=0, sy=0, ww0=400, wc0=40;
         const cv=$('ccanvas'+idx); if(!cv) return;
         cv.addEventListener('mousedown',e=>{
           if(e.button!==0) return;
           e.preventDefault();
-          dragging=true; sx=e.clientX; sy=e.clientY;
-          ww0=_comp.panels[idx].ww; wc0=_comp.panels[idx].wc;
-        });
-        window.addEventListener('mouseup',()=>dragging=false);
-        window.addEventListener('mousemove',e=>{
-          if(!dragging) return;
-          const p=_comp.panels[idx];
-          p.ww=Math.max(1,ww0+(e.clientX-sx)*3);
-          p.wc=wc0+(e.clientY-sy)*2;
-          if(_comp.syncWL){
-            for(let j=0;j<4;j++){ _comp.panels[j].ww=p.ww; _comp.panels[j].wc=p.wc; }
-            for(let j=0;j<4;j++) if(_comp.panels[j].uid) _compRenderPanel(j);
-          } else {
-            _compRenderPanel(idx);
-          }
+          _drag.active=true; _drag.idx=idx;
+          _drag.sx=e.clientX; _drag.sy=e.clientY;
+          _drag.ww0=_comp.panels[idx].ww; _drag.wc0=_comp.panels[idx].wc;
+          cv.style.cursor='ew-resize';
         });
         cv.addEventListener('wheel',e=>{
-          e.preventDefault();
-          const p=_comp.panels[idx];
-          p.slice=Math.max(0,Math.min((S.series[p.uid]?.instances.length||1)-1, p.slice+(e.deltaY>0?1:-1)));
+          e.preventDefault(); e.stopPropagation();
+          const p=_comp.panels[idx]; if(!p.uid) return;
+          const maxIdx=(S.series[p.uid]?.instances.length||1)-1;
+          p.slice=Math.max(0,Math.min(maxIdx, p.slice+(e.deltaY>0?1:-1)));
           const sl=$('cslice'+idx); if(sl) sl.value=p.slice;
-          compGoSlice(idx, p.slice);
+          compGoSlice(idx,p.slice);
         },{passive:false});
       })(i);
     }
+    window.addEventListener('mousemove',e=>{
+      if(_drag.active) _applyDrag(e.clientX, e.clientY);
+    });
+    window.addEventListener('mouseup',()=>{
+      if(!_drag.active) return;
+      const cv=$('ccanvas'+_drag.idx); if(cv) cv.style.cursor='crosshair';
+      _drag.active=false;
+    });
   });
 })();
+
 
 // ─── LUT SHAPES ───────────────────────────────────────────────────────────────
 function setLUT(shape){
