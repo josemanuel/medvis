@@ -164,6 +164,9 @@ input[type=range].rng.amb::-webkit-slider-thumb{background:var(--amb);box-shadow
 .cmbtn:hover{transform:scaleY(1.15)}
 .cmbtn.active{border-color:#fff}
 .cmbtn .cmlbl{position:absolute;bottom:-13px;left:50%;transform:translateX(-50%);font-family:var(--mono);font-size:8px;color:var(--t1);white-space:nowrap}
+.seg-color{width:22px;height:22px;border-radius:3px;cursor:pointer;border:2px solid transparent;transition:all .15s;flex-shrink:0}
+.seg-color:hover{transform:scale(1.12)}
+.seg-color.active{border-color:#fff;box-shadow:0 0 5px rgba(255,255,255,.4)}
 .sbar{height:21px;background:var(--bg1);border-top:1px solid var(--b0);display:flex;align-items:center;padding:0 11px;gap:14px;font-family:var(--mono);font-size:10px;color:var(--t1);flex-shrink:0;z-index:50}
 .sdot{width:5px;height:5px;border-radius:50%;background:var(--t2)}
 .sdot.ok{background:var(--grn);box-shadow:0 0 4px var(--grn)}
@@ -250,7 +253,8 @@ kbd{font-family:var(--mono);font-size:9px;background:var(--bg3);border:1px solid
       <div id="v2d">
         <div class="canvaswrap" id="canvaswrap">
           <canvas id="dicomCanvas"></canvas>
-          <canvas id="overlay6000" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:10;image-rendering:pixelated"></canvas>
+          <canvas id="overlay6000" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:9;image-rendering:pixelated"></canvas>
+          <canvas id="segCanvas"   style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:10;image-rendering:pixelated"></canvas>
           <svg id="measureSVG" xmlns="http://www.w3.org/2000/svg"></svg>
           <div class="overlay">
             <div class="otl" id="oTL"></div>
@@ -488,7 +492,46 @@ kbd{font-family:var(--mono);font-size:9px;background:var(--bg3);border:1px solid
         <div class="ptitle">Measurements</div>
         <div id="measPanel"><div style="font-family:var(--mono);font-size:11px;color:var(--t1)">No measurements</div></div>
       </div>
-      <div class="cgrp" id="aiGrp" style="display:none">
+      <!-- SEGMENTATION PANEL -->
+      <div class="cgrp" id="segGrp">
+        <div class="ptitle" style="display:flex;align-items:center;justify-content:space-between">
+          <span>Segmentación</span>
+          <button onclick="segClear()" style="font-family:var(--mono);font-size:9px;background:transparent;border:1px solid var(--b1);color:var(--t2);padding:1px 7px;border-radius:2px;cursor:pointer" title="Limpiar máscara">&#10005; Clear</button>
+        </div>
+        <!-- Mode buttons -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:8px">
+          <button class="tbtn" id="segBtnThr" onclick="segSetMode('threshold')" title="Resaltar píxeles dentro del rango HU"><span class="ti">&#9638;</span>Threshold</button>
+          <button class="tbtn" id="segBtnRG"  onclick="segSetMode('region')"    title="Click en imagen para crecer desde ese punto"><span class="ti">&#127807;</span>Region</button>
+        </div>
+        <!-- Threshold controls -->
+        <div id="segThrCtrl">
+          <div class="clabel" style="margin-bottom:3px">HU min <span class="cval" id="segHUminVal">-200</span></div>
+          <input type="range" class="rng" id="segHUmin" min="-1024" max="3000" value="-200" oninput="segThrUpdate()" style="width:100%;margin-bottom:6px">
+          <div class="clabel" style="margin-bottom:3px">HU max <span class="cval" id="segHUmaxVal">400</span></div>
+          <input type="range" class="rng" id="segHUmax" min="-1024" max="3000" value="400"  oninput="segThrUpdate()" style="width:100%;margin-bottom:6px">
+        </div>
+        <!-- Region growing controls -->
+        <div id="segRGCtrl" style="display:none">
+          <div class="clabel" style="margin-bottom:3px">Tolerancia HU <span class="cval" id="segTolVal">80</span></div>
+          <input type="range" class="rng" id="segTol" min="1" max="500" value="80" oninput="$('segTolVal').textContent=this.value" style="width:100%;margin-bottom:4px">
+          <div style="font-family:var(--mono);font-size:9.5px;color:var(--t2);margin-bottom:6px">Click en la imagen para sembrar</div>
+        </div>
+        <!-- Mask color -->
+        <div class="clabel" style="margin-bottom:5px">Color máscara</div>
+        <div style="display:flex;gap:5px;margin-bottom:8px">
+          <div class="seg-color active" data-c="0" style="background:rgba(255,50,50,.7)"  onclick="segSetColor(0)" title="Rojo"></div>
+          <div class="seg-color"        data-c="1" style="background:rgba(50,255,120,.7)" onclick="segSetColor(1)" title="Verde"></div>
+          <div class="seg-color"        data-c="2" style="background:rgba(50,150,255,.7)" onclick="segSetColor(2)" title="Azul"></div>
+          <div class="seg-color"        data-c="3" style="background:rgba(255,220,50,.7)" onclick="segSetColor(3)" title="Amarillo"></div>
+        </div>
+        <!-- Stats -->
+        <div id="segStats" style="font-family:var(--mono);font-size:9.5px;color:var(--t1);line-height:1.8;display:none">
+          <div>Vóxels: <span class="cval" id="segVoxels">—</span></div>
+          <div>Área: <span class="cval" id="segArea">—</span></div>
+          <div>HU medio: <span class="cval" id="segHUmean">—</span></div>
+          <div>HU rango: <span class="cval" id="segHUrange">—</span></div>
+        </div>
+      </div>
         <div class="ptitle" style="display:flex;align-items:center;justify-content:space-between">
           <span>&#129504; An&#225;lisis IA</span>
           <div style="display:flex;gap:4px">
@@ -1649,9 +1692,11 @@ async function decode(inst){
 async function renderSlice(idx, silent=false){
   const sr=S.series[S.activeUID]; if(!sr) return;
   idx=Math.max(0,Math.min(sr.instances.length-1,idx));
+  const sliceChanged = idx !== S.slice;
   S.slice=idx;
   $('sliceR').value=idx;
   $('sliceCnt').textContent=`${idx+1} / ${sr.instances.length}`;
+  if(sliceChanged) _segOnSliceChange(); // clear mask + auto-recompute threshold
   if(!silent) showLD(true,'Decodificando...');
   try{
     const inst=await decode(sr.instances[idx]);
@@ -1697,6 +1742,9 @@ function paintCanvas(inst){
     const iCols=Math.max(1,inst.cols|0), iRows=Math.max(1,inst.rows|0);
     canvas.width=iCols; canvas.height=iRows;
     canvas.style.width=cw+'px'; canvas.style.height=ch+'px';
+    // Keep segCanvas in sync
+    const sc=$('segCanvas');
+    if(sc){ sc.width=iCols; sc.height=iRows; sc.style.width=cw+'px'; sc.style.height=ch+'px'; }
     const svg=$('measureSVG');
     svg.setAttribute('viewBox',`0 0 ${cw} ${ch}`);
     const ctx=canvas.getContext('2d');
@@ -1818,14 +1866,14 @@ function onWheel(e){
   }
 }
 function applyTransform(){
-  const cv=$('dicomCanvas'), sv=$('measureSVG');
+  const cv=$('dicomCanvas'), sv=$('measureSVG'), sc=$('segCanvas');
   const parts=[];
   if(S.panX||S.panY) parts.push(`translate(${S.panX}px,${S.panY}px)`);
   if(S.rotation)     parts.push(`rotate(${S.rotation}deg)`);
   if(S.flipH||S.flipV) parts.push(`scale(${S.flipH?-1:1},${S.flipV?-1:1})`);
   if(S.zoom!==1)     parts.push(`scale(${S.zoom})`);
   const t=parts.length?parts.join(' '):'none';
-  cv.style.transform=t; sv.style.transform=t;
+  cv.style.transform=t; sv.style.transform=t; if(sc) sc.style.transform=t;
   cv.style.imageRendering=S.zoom>1.0?'auto':'pixelated';
 }
 function showCoords(mx,my){
@@ -4257,6 +4305,195 @@ function applyCalibration(){
 
   toast(`Calibrado: ${newSpacing.toFixed(4)} mm/px`,'cyan');
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SEGMENTACIÓN SEMI-AUTOMÁTICA
+// Dos modos:
+//   · Threshold  — máscara instantánea sobre todos los píxeles en [huMin, huMax]
+//   · Region Growing — BFS desde seed click, |HU(v)-HU(seed)| ≤ tolerancia
+// La máscara se dibuja en #segCanvas (capa z:10, mismo transform que dicomCanvas).
+// Estado: _seg.mask (Uint8Array 1bpp, tamaño cols×rows de la imagen activa)
+// ═══════════════════════════════════════════════════════════════════════════
+const _seg = {
+  mode:    'threshold',  // 'threshold' | 'region'
+  colorIdx: 0,           // 0=red 1=green 2=blue 3=yellow
+  mask:    null,         // Uint8Array, length = cols*rows, 1=inside mask
+  lastUID: null,
+  lastSlice: -1,
+};
+// RGBA values for the four preset colors (alpha=160 → semitransparent)
+const _SEG_COLORS = [
+  [255, 50,  50,  160],  // red
+  [ 50, 255, 120, 160],  // green
+  [ 50, 150, 255, 160],  // blue
+  [255, 220,  50, 160],  // yellow
+];
+
+// ── Mode & color controls ──────────────────────────────────────────────────
+function segSetMode(mode){
+  _seg.mode = mode;
+  $('segBtnThr').classList.toggle('active', mode==='threshold');
+  $('segBtnRG').classList.toggle('active',  mode==='region');
+  $('segThrCtrl').style.display = mode==='threshold' ? '' : 'none';
+  $('segRGCtrl').style.display  = mode==='region'    ? '' : 'none';
+  // In region mode the canvas needs to capture clicks
+  const sc = $('segCanvas');
+  if(sc) sc.style.pointerEvents = mode==='region' ? 'auto' : 'none';
+  if(mode==='threshold') segThrUpdate(); // immediate preview
+}
+
+function segSetColor(idx){
+  _seg.colorIdx = idx;
+  document.querySelectorAll('.seg-color').forEach(el=>
+    el.classList.toggle('active', +el.dataset.c === idx)
+  );
+  segPaintMask(); // redraw with new color
+}
+
+// ── Threshold mode ──────────────────────────────────────────────────────────
+function segThrUpdate(){
+  const huMin = +$('segHUmin').value;
+  const huMax = +$('segHUmax').value;
+  $('segHUminVal').textContent = huMin;
+  $('segHUmaxVal').textContent = huMax;
+  const inst = _segActiveInst(); if(!inst) return;
+  const n = inst.rows * inst.cols;
+  if(!_seg.mask || _seg.mask.length !== n) _seg.mask = new Uint8Array(n);
+  let count = 0;
+  for(let i=0; i<n; i++){
+    const v = inst.hu[i];
+    _seg.mask[i] = (v >= huMin && v <= huMax) ? 1 : 0;
+    if(_seg.mask[i]) count++;
+  }
+  segPaintMask();
+  segUpdateStats(inst, count);
+}
+
+// ── Region Growing (BFS) ────────────────────────────────────────────────────
+function segGrow(seedX, seedY){
+  const inst = _segActiveInst(); if(!inst) return;
+  const cols = inst.cols, rows = inst.rows;
+  const tol  = +$('segTol').value;
+  const seedHU = inst.hu[seedY * cols + seedX];
+  const n = rows * cols;
+  const visited = new Uint8Array(n);
+  const mask    = new Uint8Array(n);
+  const queue   = [seedY * cols + seedX];
+  visited[queue[0]] = 1;
+  let head = 0, count = 0;
+  // BFS — 4-connectivity
+  while(head < queue.length){
+    const idx = queue[head++];
+    const x = idx % cols, y = (idx / cols) | 0;
+    if(Math.abs(inst.hu[idx] - seedHU) > tol) continue;
+    mask[idx] = 1; count++;
+    const neighbors = [
+      y>0      ? idx-cols : -1,
+      y<rows-1 ? idx+cols : -1,
+      x>0      ? idx-1   : -1,
+      x<cols-1 ? idx+1   : -1,
+    ];
+    for(const nb of neighbors){
+      if(nb>=0 && !visited[nb]){ visited[nb]=1; queue.push(nb); }
+    }
+    // Safety: bail out if region is absurdly large (>60% of image)
+    if(count > n * 0.6) break;
+  }
+  _seg.mask = mask;
+  segPaintMask();
+  segUpdateStats(inst, count);
+  toast(`Region Growing: ${count.toLocaleString()} px`, 'cyan');
+}
+
+// ── Paint mask onto segCanvas ───────────────────────────────────────────────
+function segPaintMask(){
+  const inst = _segActiveInst(); if(!inst) return;
+  const sc   = $('segCanvas'); if(!sc) return;
+  sc.width   = inst.cols; sc.height = inst.rows;
+  sc.style.width  = $('dicomCanvas').style.width  || sc.width+'px';
+  sc.style.height = $('dicomCanvas').style.height || sc.height+'px';
+  if(!_seg.mask) return;
+  const ctx  = sc.getContext('2d');
+  const imgD = ctx.createImageData(inst.cols, inst.rows);
+  const [r,g,b,a] = _SEG_COLORS[_seg.colorIdx];
+  const n = inst.cols * inst.rows;
+  for(let i=0; i<n; i++){
+    if(_seg.mask[i]){
+      imgD.data[i*4]   = r;
+      imgD.data[i*4+1] = g;
+      imgD.data[i*4+2] = b;
+      imgD.data[i*4+3] = a;
+    }
+  }
+  ctx.putImageData(imgD, 0, 0);
+}
+
+// ── Stats panel ─────────────────────────────────────────────────────────────
+function segUpdateStats(inst, count){
+  if(!count){ $('segStats').style.display='none'; return; }
+  const m = S.series[S.activeUID]?.metadata;
+  const pxSpc = parseFloat((m?.pixSpc||'1').split('\\')[0]) || 1;
+  const area  = (count * pxSpc * pxSpc).toFixed(1);
+  // Compute HU mean + range from mask
+  let sum=0, mn=Infinity, mx2=-Infinity;
+  const n = inst.rows * inst.cols;
+  for(let i=0; i<n; i++){
+    if(_seg.mask[i]){
+      const v=inst.hu[i]; sum+=v;
+      if(v<mn) mn=v; if(v>mx2) mx2=v;
+    }
+  }
+  const mean = (sum/count).toFixed(1);
+  $('segVoxels').textContent = count.toLocaleString();
+  $('segArea').textContent   = area + ' mm²';
+  $('segHUmean').textContent = mean + ' HU';
+  $('segHUrange').textContent= `${Math.round(mn)} – ${Math.round(mx2)} HU`;
+  $('segStats').style.display = '';
+}
+
+// ── Clear ────────────────────────────────────────────────────────────────────
+function segClear(){
+  _seg.mask = null;
+  const sc=$('segCanvas'); if(sc){ const ctx=sc.getContext('2d'); ctx.clearRect(0,0,sc.width,sc.height); }
+  $('segStats').style.display='none';
+  toast('Máscara borrada');
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function _segActiveInst(){
+  const sr = S.series[S.activeUID]; if(!sr) return null;
+  return sr.instances[S.slice] ?? null;
+}
+
+// ── Repaint mask when slice changes (clear — mask is per-slice) ──────────────
+// Hook into renderSlice: after paintCanvas, clear segCanvas if slice changed.
+// We do this by patching the post-render path in renderSlice.
+// (Simpler approach: export a hook called from renderSlice.)
+function _segOnSliceChange(){
+  const sc=$('segCanvas'); if(!sc) return;
+  const ctx=sc.getContext('2d'); ctx.clearRect(0,0,sc.width,sc.height);
+  _seg.mask=null; $('segStats').style.display='none';
+  // If threshold mode is active, auto-recompute for the new slice
+  if(_seg.mode==='threshold' && $('segBtnThr').classList.contains('active'))
+    setTimeout(segThrUpdate, 0); // defer so inst.hu is ready
+}
+
+// ── Region Growing seed — canvas click handler ───────────────────────────────
+window.addEventListener('load', ()=>{
+  const sc=$('segCanvas'); if(!sc) return;
+  sc.addEventListener('click', e=>{
+    if(_seg.mode!=='region') return;
+    const inst=_segActiveInst(); if(!inst) return;
+    const br=sc.getBoundingClientRect();
+    // Map click → image pixel (account for CSS letterbox)
+    const scaleX = inst.cols / br.width;
+    const scaleY = inst.rows / br.height;
+    const px = Math.floor((e.clientX - br.left) * scaleX);
+    const py = Math.floor((e.clientY - br.top)  * scaleY);
+    if(px<0||px>=inst.cols||py<0||py>=inst.rows) return;
+    segGrow(px, py);
+  });
+});
 
 // ─── EXPORT ─────────────────────────────────────────────────────────────────────
 function exportPNG(){
