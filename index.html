@@ -1005,9 +1005,12 @@ async function processFiles(rawFiles){
 
       const uid = tg(ds,'x0020000e') || ('SER_'+i);
       const n   = parseInt(tg(ds,'x00200013')||'0')||i;
+      const nFrames = safeInt(tg(ds,'x00280008'), 1);
 
       if(!S.series[uid]) S.series[uid]={ instances:[], metadata:extractMeta(ds) };
-      S.series[uid].instances.push({ n, file:files[i], ds, buf });
+      S.series[uid].instances.push({ n, file:files[i], ds, buf, nFrames });
+      // Mark series as multi-frame so loadSeries can switch UI mode
+      if(nFrames > 1) S.series[uid].multiframe = true;
       parsed++;
     } catch{ errors++; }
 
@@ -1174,15 +1177,32 @@ async function loadSeries(uid){
   }
   S.activeUID=uid; S.slice=0; S.annotsBySlice={}; clearSVG();
   S.mprCutX=undefined; S.mprCutY=undefined;
-  if(_mprAC){ _mprAC.abort(); _mprAC=null; } // detach MPR listeners for old series
-  const sr=S.series[uid], m=sr.metadata, total=sr.instances.length;
+  if(_mprAC){ _mprAC.abort(); _mprAC=null; }
+  const sr=S.series[uid], m=sr.metadata;
+
+  // ── Multi-frame detection ──────────────────────────────────────────────────
+  // A series is "multiframe" when it has a single instance with nFrames > 1
+  // (typical for US cine loops, NM dynamic, RF fluoroscopy).
+  // In that case the slice slider navigates frames within the one file.
+  const isMF = sr.multiframe && sr.instances.length === 1 && (sr.instances[0].nFrames||1) > 1;
+  S.mfMode  = isMF;   // true = frame navigation mode
+  S.mfFrame = 0;      // current frame index (only used when mfMode=true)
+
+  const total = isMF ? (sr.instances[0].nFrames||1) : sr.instances.length;
   $('sliceR').max=Math.max(0,total-1); $('sliceR').value=0;
+  // Label: "FRAME" for multiframe, "SLICE" for normal series
+  const sliceLabel = document.querySelector('.slicebar label');
+  if(sliceLabel) sliceLabel.textContent = isMF ? 'FRAME' : 'SLICE';
   $('sliceCnt').textContent=`1 / ${total}`;
   $('metaGrid').innerHTML=
     mrow('Modality',m.modality,true)+mrow('Series',m.seriesDesc)+mrow('Body',m.bodyPart)+
-    mrow('Images',total,true)+mrow('Dim',`${m.rows}x${m.cols}`)+mrow('Px Spc',m.pixSpc)+
+    mrow(isMF?'Frames':'Images',total,true)+mrow('Dim',`${m.rows}x${m.cols}`)+mrow('Px Spc',m.pixSpc)+
     mrow('Thk',m.sliceThk)+mrow('KVP',m.kvp)+mrow('Manuf.',m.manufacturer)+mrow('Inst.',m.institution);
-  await renderSlice(0);
+  if(isMF){
+    await renderFrame(0);
+  } else {
+    await renderSlice(0);
+  }
 
   // After first decode, inst0.rows/cols are always correct (from decode walker).
   // Update metadata and UI if the parse-time values were missing or '?'.
@@ -1507,6 +1527,14 @@ async function decode(inst){
 
   if(pixDataOffset===0) throw new Error('Sin datos de píxel en: '+inst.file.name);
 
+  // ── Multi-frame support ───────────────────────────────────────────────────
+  // NumberOfFrames (0028,0008) tells how many frames are packed contiguously.
+  // For single-file multi-frame objects (US cine, NM, RF) we decode frame 0
+  // now and store metadata so decodeFrame(inst, n) can extract any frame later
+  // without re-parsing the file.
+  const nFrames = inst.nFrames || safeInt(tg(ds,'x00280008'), 1);
+  inst.nFrames = nFrames;  // ensure it's on the inst for later use
+
   const expectedPixels = rows * cols;
   const hu = new Float32Array(expectedPixels);
   let minHU=Infinity, maxHU=-Infinity;
@@ -1685,7 +1713,49 @@ async function decode(inst){
   inst.hu=hu; inst.minHU=minHU; inst.maxHU=maxHU;
   inst.rows=rows; inst.cols=cols;
   inst.transferSyntax=ts;
+  // Store raw-access info for multi-frame decoding
+  inst._pixOff   = pixDataOffset;
+  inst._pixLen   = pixDataLength;
+  inst._bitsA    = bitsA;
+  inst._pixRp    = pixRp;
+  inst._slope    = slope;
+  inst._inter    = inter;
+  inst._frameStride = Math.ceil((rows * cols * bitsA) / 8); // bytes per frame
   return inst;
+}
+
+// ── decodeFrame(inst, frameIdx) ─────────────────────────────────────────────
+// Extracts HU values for a specific frame from a multi-frame inst.
+// Frame 0 is already in inst.hu (decoded by decode()).
+// Subsequent frames are decoded on demand from inst.buf.
+// Returns a Float32Array (length = rows*cols) — not cached to save memory.
+function decodeFrame(inst, frameIdx){
+  if(frameIdx === 0) return inst.hu; // already decoded
+  if(!inst._pixOff || !inst._frameStride) return inst.hu; // fallback
+  const buf    = inst.buf;
+  const stride = inst._frameStride;
+  const rows   = inst.rows, cols = inst.cols;
+  const n      = rows * cols;
+  const byteOff = inst._pixOff + frameIdx * stride;
+  if(byteOff + stride > buf.byteLength) return inst.hu; // out of bounds
+
+  const hu = new Float32Array(n);
+  const slope = inst._slope, inter = inst._inter;
+  let minHU=Infinity, maxHU=-Infinity;
+
+  if(inst._bitsA <= 8){
+    const px = new Uint8Array(buf, byteOff, n);
+    for(let i=0;i<n;i++){ const v=px[i]*slope+inter; hu[i]=v; if(v<minHU)minHU=v; if(v>maxHU)maxHU=v; }
+  } else {
+    const byteLen = Math.min(stride, buf.byteLength - byteOff);
+    const raw  = new Uint8Array(buf, byteOff, byteLen).slice();
+    const even = raw.byteLength - (raw.byteLength % 2);
+    const al   = raw.buffer.slice(raw.byteOffset, raw.byteOffset + even);
+    const px   = inst._pixRp===1 ? new Int16Array(al) : new Uint16Array(al);
+    const len  = Math.min(px.length, n);
+    for(let i=0;i<len;i++){ const v=px[i]*slope+inter; hu[i]=v; if(v<minHU)minHU=v; if(v>maxHU)maxHU=v; }
+  }
+  return hu;
 }
 
 // ─── RENDER 2D ─────────────────────────────────────────────────────────────────
@@ -2005,12 +2075,97 @@ function updateMeasPanel(){
 
 // ─── NAVIGATION ─────────────────────────────────────────────────────────────────
 function goSlice(idx){
+  if(S.mfMode){
+    // Multi-frame mode: navigate frames within the single instance
+    const inst = S.series[S.activeUID]?.instances[0]; if(!inst) return;
+    const total = inst.nFrames || 1;
+    idx = Math.max(0, Math.min(total-1, idx));
+    if(idx === S.mfFrame) return;
+    S.mfFrame = idx;
+    $('sliceR').value = idx;
+    $('sliceCnt').textContent = `${idx+1} / ${total}`;
+    renderFrame(idx, true);
+    return;
+  }
   const sr=S.series[S.activeUID]; if(!sr) return;
   idx=Math.max(0,Math.min(sr.instances.length-1,idx));
   if(idx===S.slice) return;
   renderSlice(idx,true);
-  // Refresh MPR crosshair position if MPR pane is visible
   if($('vmpr').style.display!=='none' && S.mprVol) renderMPR();
+}
+
+// ─── MULTI-FRAME RENDER ─────────────────────────────────────────────────────────
+// Renders a specific frame index from a multi-frame inst (US, NM, RF, etc.)
+async function renderFrame(frameIdx, silent=false){
+  const sr = S.series[S.activeUID]; if(!sr) return;
+  const inst = sr.instances[0];
+  if(!silent) showLD(true, 'Decodificando frame...');
+  try{
+    // Ensure base decode has happened (populates inst.hu for frame 0,
+    // and stores _pixOff/_bitsA/_slope etc. needed by decodeFrame)
+    await decode(inst);
+    const frameHU = decodeFrame(inst, frameIdx);
+    // Auto W/L on first load
+    if(!sr._wlSet){ sr._wlSet=true; autoWindowLevelHU(frameHU, inst.minHU, inst.maxHU); }
+    paintCanvasHU(frameHU, inst.cols, inst.rows);
+    updateOverlaysMF(inst, frameIdx);
+    drawHistogram(frameHU, inst.minHU, inst.maxHU);
+    highlightThumb(frameIdx);
+    updateMeasPanel();
+  } catch(e){
+    console.error('renderFrame error:', e);
+    toast('Error frame '+frameIdx+': '+e.message, 'err');
+  }
+  if(!silent) showLD(false);
+}
+
+// paintCanvasHU — paints an arbitrary Float32Array (hu) onto dicomCanvas
+// Used by renderFrame so we don't duplicate the W/L logic from paintCanvas
+function paintCanvasHU(hu, cols, rows){
+  const wrap=$('canvaswrap');
+  const cw=Math.max(1,wrap.clientWidth||512), ch=Math.max(1,wrap.clientHeight||512);
+  const canvas=$('dicomCanvas');
+  const iCols=Math.max(1,cols|0), iRows=Math.max(1,rows|0);
+  canvas.width=iCols; canvas.height=iRows;
+  canvas.style.width=cw+'px'; canvas.style.height=ch+'px';
+  const sc=$('segCanvas');
+  if(sc){ sc.width=iCols; sc.height=iRows; sc.style.width=cw+'px'; sc.style.height=ch+'px'; }
+  const svg=$('measureSVG'); svg.setAttribute('viewBox',`0 0 ${cw} ${ch}`);
+  const ctx=canvas.getContext('2d');
+  const imgD=ctx.createImageData(iCols,iRows);
+  const wwMin=S.wc-S.ww/2, wwR=S.ww||1;
+  const total=iCols*iRows;
+  const lut=S._lutCache; // reuse LUT if available (built by paintCanvas)
+  for(let i=0;i<total;i++){
+    let v=Math.round(((hu[i]-wwMin)/wwR)*255);
+    v=Math.max(0,Math.min(255,v));
+    if(S.inverted) v=255-v;
+    imgD.data[i*4]=v; imgD.data[i*4+1]=v; imgD.data[i*4+2]=v; imgD.data[i*4+3]=255;
+  }
+  ctx.putImageData(imgD,0,0);
+}
+
+function autoWindowLevelHU(hu, minHU, maxHU){
+  const n=hu.length;
+  const step=Math.max(1,Math.floor(n/50000));
+  const vals=[];
+  for(let i=0;i<n;i+=step) if(isFinite(hu[i])) vals.push(hu[i]);
+  vals.sort((a,b)=>a-b);
+  const lo=vals[Math.floor(vals.length*.02)]??minHU;
+  const hi=vals[Math.floor(vals.length*.98)]??maxHU;
+  S.ww=Math.max(1,Math.round(hi-lo)); S.wc=Math.round(lo+S.ww/2);
+  syncWL();
+}
+
+function updateOverlaysMF(inst, frameIdx){
+  const sr=S.series[S.activeUID]; if(!sr) return;
+  const m=sr.metadata;
+  const total=inst.nFrames||1;
+  const pn=(m.patientName||'').replace(/\^/g,' ');
+  $('oTL').innerHTML=`${pn}<br>${m.patientID}<br>${fmtDate(m.studyDate)}`;
+  $('oTR').innerHTML=`${m.institution}<br>${m.manufacturer}<br>${m.modality}`;
+  $('oBL').innerHTML=`${inst.cols}x${inst.rows}<br>Px:${m.pixSpc}<br>Thk:${m.sliceThk}`;
+  $('oBR').innerHTML=`Frame ${frameIdx+1}/${total}<br>${m.seriesDesc}<br>W:${S.ww} L:${S.wc}`;
 }
 
 // ─── HISTOGRAM ──────────────────────────────────────────────────────────────────
@@ -2094,7 +2249,8 @@ function equalizeHistogram(){
 function buildThumbs(){
   const sr=S.series[S.activeUID]; if(!sr) return;
   const bar=$('thumbbar'); bar.innerHTML='';
-  const total=sr.instances.length;
+  const isMF = S.mfMode && sr.instances.length===1;
+  const total = isMF ? (sr.instances[0].nFrames||1) : sr.instances.length;
   const step=Math.max(1,Math.floor(total/Math.min(16,total)));
   for(let i=0;i<total;i+=step){
     const wrap=document.createElement('div'); wrap.className='thumb'; wrap.dataset.idx=i;
@@ -2102,13 +2258,14 @@ function buildThumbs(){
     const span=document.createElement('span'); span.className='tidx'; span.textContent=i+1;
     wrap.appendChild(c); wrap.appendChild(span); wrap.onclick=()=>goSlice(i);
     bar.appendChild(wrap);
-    (async(idx)=>{
+    (async(fi)=>{
       try{
-        const inst=await decode(sr.instances[idx]);
+        const inst = await decode(isMF ? sr.instances[0] : sr.instances[fi]);
+        const hu   = isMF ? decodeFrame(inst, fi) : inst.hu;
         const ctx=c.getContext('2d'), imgD=ctx.createImageData(46,46);
         const sx=inst.cols/46, sy=inst.rows/46, wwMin=S.wc-S.ww/2, wwR=S.ww||1;
         for(let y=0;y<46;y++) for(let x=0;x<46;x++){
-          let v=Math.round(((inst.hu[Math.floor(y*sy)*inst.cols+Math.floor(x*sx)]-wwMin)/wwR)*255);
+          let v=Math.round(((hu[Math.floor(y*sy)*inst.cols+Math.floor(x*sx)]-wwMin)/wwR)*255);
           v=Math.max(0,Math.min(255,v));
           const i4=(y*46+x)*4; imgD.data[i4]=v; imgD.data[i4+1]=v; imgD.data[i4+2]=v; imgD.data[i4+3]=255;
         }
@@ -2120,7 +2277,9 @@ function buildThumbs(){
 }
 function highlightThumb(idx){
   const sr=S.series[S.activeUID]; if(!sr) return;
-  const step=Math.max(1,Math.floor(sr.instances.length/Math.min(16,sr.instances.length)));
+  const isMF = S.mfMode && sr.instances.length===1;
+  const total = isMF ? (sr.instances[0].nFrames||1) : sr.instances.length;
+  const step=Math.max(1,Math.floor(total/Math.min(16,total)));
   document.querySelectorAll('.thumb').forEach(t=>{ t.classList.toggle('active',Math.abs(parseInt(t.dataset.idx)-idx)<step); });
 }
 
@@ -3798,8 +3957,10 @@ function cineToggle(){
   setStatus(`Cine · ${S.cineFPS} fps`,'ok');
   S.cineInterval=setInterval(()=>{
     const sr2=S.series[S.activeUID]; if(!sr2){ cineToggle(); return; }
-    const total=sr2.instances.length;
-    let next=S.slice+S.cineDir;
+    const isMF2 = S.mfMode && sr2.instances.length===1;
+    const total = isMF2 ? (sr2.instances[0].nFrames||1) : sr2.instances.length;
+    const cur   = isMF2 ? S.mfFrame : S.slice;
+    let next=cur+S.cineDir;
     if(S.cineLoop){
       if(next>=total) next=0;
       if(next<0) next=total-1;
